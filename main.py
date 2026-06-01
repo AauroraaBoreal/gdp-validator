@@ -29,11 +29,6 @@ def procesar_csv(ruta_archivo):
     anomalias = df[df['es_anomalia'] == True]
     guardar_anomalias(anomalias, validacion_id)
 
-    # Paso 6: Aprendizaje incremental
-    print("\nActualizando modelo con nuevos datos...")
-    actualizar_modelo_incremental(df)
-    print("Modelo actualizado correctamente.")
-
     print("\n✅ Proceso completado.")
 
 if __name__ == "__main__":

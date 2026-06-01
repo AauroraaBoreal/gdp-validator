@@ -60,6 +60,22 @@ def generar_reporte_whatsapp(df):
         f"El cliente {tipo_ganancia}."
     )
 
+    # Observación de free games inusuales
+    observacion_fg = ""
+    if 'es_free_game_inusual' in df.columns:
+        from modules.modulo3_anomalias import obtener_observaciones_free_games
+        obs = obtener_observaciones_free_games(df)
+        if obs:
+            observacion_fg = f" Observación: {obs}"
+
+    reporte = (
+        f"El usuario {player_id} tenía un balance inicial de ${balance_inicial:,.2f} MXN "
+        f"(fila {fila_inicio}), con apuestas de ${total_apostado:,.2f} MXN "
+        f"en los juegos principales: {juegos_str}, "
+        f"modificando su balance a ${balance_final:,.2f} MXN (fila {fila_fin}). "
+        f"El cliente {tipo_ganancia}.{observacion_fg}"
+    )
+
     return reporte
 
 def generar_reporte_qa(df_anomalias):
@@ -73,7 +89,9 @@ def generar_reporte_qa(df_anomalias):
     lineas.append("-" * 50)
 
     for _, row in df_anomalias.iterrows():
+        fila_numero = row.name + 1  # +1 porque el índice empieza en 0
         lineas.append(f"\n🔴 Tipo: {row['tipo_anomalia']}")
+        lineas.append(f"   Fila en CSV      : {fila_numero}")
         lineas.append(f"   GameInstanceID : {row.get('GameInstanceId', 'N/A')}")
         lineas.append(f"   Fecha y hora   : {row['EventTime']}")
         lineas.append(f"   Juego          : {row.get('GameId', 'N/A')}")
@@ -118,4 +136,4 @@ def mostrar_reportes(df):
         reporte_qa = None
 
     print("\n" + "=" * 60)
-    return resultado, reporte_whatsapp, reporte_qa
+    return resultado, reporte_whatsapp, reporte_qa  

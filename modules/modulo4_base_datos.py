@@ -10,7 +10,19 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_engine():
     return create_engine(DATABASE_URL)
 
+def test_conexion():
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
 def crear_tablas():
+    if not test_conexion():
+        print("⚠️  Sin conexión a Supabase — operación omitida")
+        return
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(text("""
@@ -25,7 +37,6 @@ def crear_tablas():
                 ultima_actualizacion TIMESTAMP
             );
         """))
-
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS validaciones (
                 validacion_id SERIAL PRIMARY KEY,
@@ -38,7 +49,6 @@ def crear_tablas():
                 fecha_procesamiento TIMESTAMP DEFAULT NOW()
             );
         """))
-
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS anomalias (
                 anomalia_id SERIAL PRIMARY KEY,
@@ -54,7 +64,6 @@ def crear_tablas():
                 score_anomalia DECIMAL
             );
         """))
-
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS modelo_versiones (
                 version_id SERIAL PRIMARY KEY,
@@ -64,20 +73,20 @@ def crear_tablas():
                 accuracy_post DECIMAL
             );
         """))
-
         conn.commit()
     print("Tablas creadas correctamente en Supabase")
 
 def guardar_jugador(df):
+    if not test_conexion():
+        print("⚠️  Sin conexión a Supabase — jugador no guardado")
+        return
     engine = get_engine()
     player_id = str(df['PlayerId'].iloc[0])
     currency = str(df['Currency'].iloc[0]) if 'Currency' in df.columns else 'MXN'
-
     apuesta_promedio = round(df['TotalBet'].mean(), 2)
     apuesta_max = round(df['TotalBet'].max(), 2)
     ganancia_max = round(df['TotalWin'].max(), 2)
     ratio_promedio = round(df['ratio_ganancia'].mean(), 2)
-
     with engine.connect() as conn:
         conn.execute(text("""
             INSERT INTO jugadores (player_id, currency, apuesta_promedio, apuesta_max, ganancia_max, ratio_promedio, total_sesiones, ultima_actualizacion)
@@ -101,12 +110,14 @@ def guardar_jugador(df):
     print(f"Jugador {player_id} guardado/actualizado")
 
 def guardar_validacion(df, resultado, reporte_whatsapp):
+    if not test_conexion():
+        print("⚠️  Sin conexión a Supabase — validación no guardada")
+        return None
     engine = get_engine()
     player_id = str(df['PlayerId'].iloc[0])
     fecha_inicio = df['EventTime'].min()
     fecha_fin = df['EventTime'].max()
     total_registros = len(df)
-
     with engine.connect() as conn:
         result = conn.execute(text("""
             INSERT INTO validaciones (player_id, fecha_inicio, fecha_fin, total_registros, resultado, reporte_whatsapp)
@@ -126,10 +137,12 @@ def guardar_validacion(df, resultado, reporte_whatsapp):
     return validacion_id
 
 def guardar_anomalias(df_anomalias, validacion_id):
+    if validacion_id is None:
+        print("⚠️  Sin conexión a Supabase — anomalías no guardadas")
+        return
     if df_anomalias.empty:
         print("No hay anomalías para guardar")
         return
-
     engine = get_engine()
     with engine.connect() as conn:
         for _, row in df_anomalias.iterrows():

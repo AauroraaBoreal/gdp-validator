@@ -1,18 +1,19 @@
 from modules.modulo1_carga import cargar_csv
-from modules.modulo2_clasificacion import entrenar_modelo
-from modules.modulo3_anomalias import actualizar_modelo_incremental
+from modules.modulo2_clasificacion import entrenar_modelo, clasificar_eventos
+from modules.modulo3_anomalias import actualizar_modelo_incremental, entrenar_detector
+from sklearn.metrics import classification_report, accuracy_score
 import os
 import glob
 import pandas as pd
 
+CSV_EVALUACION = 'data/30948.csv'
+
 def validar_sistema():
-    """Verifica que todos los módulos del sistema funcionan correctamente."""
     print("\n" + "=" * 60)
     print("VALIDACIÓN DEL SISTEMA — QA")
     print("=" * 60)
     errores = []
 
-    # Verificar que existen los modelos entrenados
     if not os.path.exists('modelo_clasificador.pkl'):
         errores.append("❌ modelo_clasificador.pkl no encontrado")
     else:
@@ -23,7 +24,6 @@ def validar_sistema():
     else:
         print("✅ Modelo de anomalías encontrado")
 
-    # Verificar conexión a base de datos
     try:
         from modules.modulo4_base_datos import get_engine
         engine = get_engine()
@@ -33,14 +33,12 @@ def validar_sistema():
     except Exception as e:
         errores.append(f"❌ Error de conexión a base de datos: {e}")
 
-    # Verificar que hay archivos CSV disponibles
     archivos = glob.glob('data/*.csv')
     if not archivos:
         errores.append("❌ No hay archivos CSV en la carpeta data/")
     else:
         print(f"✅ {len(archivos)} archivos CSV disponibles para entrenamiento")
 
-    # Verificar módulos importables
     try:
         from modules.modulo1_carga import cargar_csv
         from modules.modulo2_clasificacion import clasificar_eventos
@@ -58,16 +56,56 @@ def validar_sistema():
     else:
         print("RESULTADO: ✅ Sistema validado correctamente — sin problemas")
     print("=" * 60 + "\n")
-
     return len(errores) == 0
 
+def evaluar_modelo(modelo, df_prueba):
+    """Evalúa el modelo con un CSV que no participó en el entrenamiento."""
+    from modules.modulo2_clasificacion import preparar_features, etiquetar_evento
+    import pickle
+
+    print("\n" + "=" * 60)
+    print("EVALUACIÓN DEL MODELO — CSV INDEPENDIENTE")
+    print(f"Archivo de prueba: {CSV_EVALUACION}")
+    print(f"Total registros de prueba: {len(df_prueba)}")
+    print("=" * 60)
+
+    # Generar etiquetas reales
+    df_prueba['etiqueta_real'] = df_prueba.apply(etiquetar_evento, axis=1)
+
+    # Predecir con el modelo
+    X_prueba = preparar_features(df_prueba)
+    with open('modelo_clasificador.pkl', 'rb') as f:
+        modelo_clf = pickle.load(f)
+
+    df_prueba['etiqueta_predicha'] = modelo_clf.predict(X_prueba)
+
+    # Métricas
+    print("\nDistribución de etiquetas reales en CSV de prueba:")
+    print(df_prueba['etiqueta_real'].value_counts())
+
+    print("\nReporte de clasificación:")
+    print(classification_report(
+        df_prueba['etiqueta_real'],
+        df_prueba['etiqueta_predicha'],
+        zero_division=0
+    ))
+
+    acc = accuracy_score(df_prueba['etiqueta_real'], df_prueba['etiqueta_predicha'])
+    print(f"Accuracy general: {acc:.4f} ({acc*100:.2f}%)")
+    print("=" * 60)
+
+    return acc
+
+# --- ENTRENAMIENTO ---
 archivos = glob.glob('data/*.csv')
-print(f"Archivos encontrados: {len(archivos)}")
+archivos_entrenamiento = [a for a in archivos if os.path.basename(a) != '30948.csv']
+print(f"Archivos para entrenamiento: {len(archivos_entrenamiento)}")
+print(f"Archivo reservado para evaluación: {CSV_EVALUACION}\n")
 
 df_total = None
 
-for archivo in archivos:
-    print(f"\nProcesando: {archivo}")
+for archivo in archivos_entrenamiento:
+    print(f"Procesando: {archivo}")
     try:
         df = cargar_csv(archivo)
         if df_total is None:
@@ -77,11 +115,20 @@ for archivo in archivos:
     except Exception as e:
         print(f"Error en {archivo}: {e}")
 
-print(f"\nTotal de registros combinados: {len(df_total)}")
-print("Entrenando modelo con todos los datos...")
+print(f"\nTotal de registros para entrenamiento: {len(df_total)}")
+print("Entrenando modelo clasificador...")
 modelo_clf, df_total = entrenar_modelo(df_total)
-actualizar_modelo_incremental(df_total)
-print("\nEntrenamiento completo con todos los CSV.")
 
-# Ejecutar validación QA al final
+print("\nEntrenando detector de anomalías...")
+entrenar_detector(df_total)
+
+actualizar_modelo_incremental(df_total)
+print("\nEntrenamiento completo.")
+
+# --- EVALUACIÓN ---
+print("\nCargando CSV de evaluación independiente...")
+df_prueba = cargar_csv(CSV_EVALUACION)
+evaluar_modelo(modelo_clf, df_prueba)
+
+# --- VALIDACIÓN QA ---
 validar_sistema()
