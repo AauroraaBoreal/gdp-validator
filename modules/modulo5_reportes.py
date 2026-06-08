@@ -1,66 +1,95 @@
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
-def generar_reporte_whatsapp(df):
+def buscar_retiro(df, monto_retiro):
+    """
+    Busca el retiro más cercano al monto ingresado usando búsqueda
+    lineal vectorizada con NumPy — O(n), óptima para datos sin orden garantizado.
+    
+    Fórmula: Balance[i] - Balance[i+1] + BalanceChange[i+1] = monto retiro
+    """
+    balance = df['Balance'].values
+    balance_change = df['BalanceChange'].values
+
+    # Calcular diferencias vectorialmente para todas las filas consecutivas
+    diferencias = balance[:-1] - balance[1:] + balance_change[1:]
+
+    # Buscar el índice con diferencia más cercana al monto ingresado
+    diff_abs = np.abs(diferencias - float(monto_retiro))
+    idx_min = np.argmin(diff_abs)
+
+    # idx_min corresponde a la fila i, el retiro ocurre en i+1
+    idx_retiro = idx_min + 1
+    monto_encontrado = diferencias[idx_min]
+
+    return idx_retiro, monto_encontrado
+
+def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
     player_id = str(df['PlayerId'].iloc[0])
 
-    # Encontrar la ganancia alta o jackpot principal
-    jackpots = df[(df['TotalJPWin'].notna()) & (df['TotalJPWin'] > 0)]
-    ganancias_altas = df[df['clasificacion'] == 'ganancia_alta']
-
-    if not jackpots.empty:
-        evento_principal = jackpots.loc[jackpots['TotalJPWin'].idxmax()]
-    elif not ganancias_altas.empty:
-        evento_principal = ganancias_altas.loc[ganancias_altas['TotalWin'].idxmax()]
+    if idx_forzado is not None:
+        idx_evento = idx_forzado
+        balance = df['Balance'].values
+        balance_change = df['BalanceChange'].values
+        monto_encontrado = balance[idx_evento - 1] - balance[idx_evento] + balance_change[idx_evento]
+    elif monto_validar is not None and float(monto_validar) > 0:
+        idx_evento, monto_encontrado = buscar_retiro(df, monto_validar)
     else:
-        evento_principal = df.loc[df['TotalWin'].idxmax()]
+        balance = df['Balance'].values
+        balance_change = df['BalanceChange'].values
+        diferencias = balance[:-1] - balance[1:] + balance_change[1:]
+        idx_min = np.argmax(diferencias)
+        idx_evento = idx_min + 1
+        monto_encontrado = diferencias[idx_min]
 
-    idx_evento = evento_principal.name
+    evento_principal = df.loc[idx_evento]
 
-    # Encontrar la última recarga antes del evento principal
+    # Última recarga antes del retiro
     recargas = df[(df['clasificacion'] == 'recarga') & (df.index < idx_evento)]
+    idx_recarga = recargas.index[-1] if not recargas.empty else 0
 
-    if not recargas.empty:
-        idx_recarga = recargas.index[-1]
-    else:
-        idx_recarga = 0
-
-    # Tramo relevante: desde la última recarga hasta el evento principal
     tramo = df.loc[idx_recarga:idx_evento]
-
     balance_inicial = tramo['BalanceStart'].iloc[0]
-    balance_final = evento_principal['Balance']
-    total_apostado = tramo['TotalBet'].sum()
-
-    # Juegos más jugados en el tramo
-    juegos_conteo = tramo['GameId'].value_counts()
-    juegos_principales = juegos_conteo.head(3).index.tolist()
-    juegos_str = ', '.join(juegos_principales)
-
-    # Rango de filas del tramo
     fila_inicio = idx_recarga + 1
-    fila_fin = idx_evento + 1
+    fila_retiro = idx_evento + 1
 
-    # Tipo de ganancia
-    if not jackpots.empty:
-        tipo_ganancia = f"obtuvo un jackpot de ${evento_principal['TotalJPWin']:,.2f} MXN en el juego {evento_principal['GameId']}"
-    else:
-        tipo_ganancia = (
-            f"su ganancia más alta fue de ${evento_principal['TotalWin']:,.2f} MXN "
-            f"con una apuesta de ${evento_principal['TotalBet']:,.2f} MXN "
-            f"(ratio x{round(evento_principal['ratio_ganancia'], 1)}) "
-            f"en el juego {evento_principal['GameId']}"
-        )
+    # Balance justo antes del retiro (fila anterior al retiro)
+    idx_anterior = idx_evento - 1
+    balance_antes_retiro = df.loc[idx_anterior, 'Balance'] if idx_anterior >= 0 else balance_inicial
 
-    reporte = (
-        f"El usuario {player_id} tenía un balance inicial de ${balance_inicial:,.2f} MXN "
-        f"(fila {fila_inicio}), con apuestas de ${total_apostado:,.2f} MXN "
-        f"en los juegos principales: {juegos_str}, "
-        f"modificando su balance a ${balance_final:,.2f} MXN (fila {fila_fin}). "
-        f"El cliente {tipo_ganancia}."
+    # Top 3 apuestas más altas únicas en el tramo
+    top_apuestas = (
+        tramo[tramo['TotalBet'] > 0]
+        .drop_duplicates(subset=['TotalBet'])
+        .nlargest(3, 'TotalBet')['TotalBet']
     )
+    apuestas_str = ', '.join([f"${v:,.2f}" for v in top_apuestas]) if not top_apuestas.empty else "sin apuestas registradas"
 
-    # Observación de free games inusuales
+    # Top 3 juegos más jugados en el tramo
+    juegos_str = ', '.join(tramo['GameId'].value_counts().head(3).index.tolist())
+
+    # Jackpot o ganancia alta en el tramo
+    comentario_extra = ""
+    jackpots_tramo = tramo[(tramo['TotalJPWin'].notna()) & (tramo['TotalJPWin'] > 0)]
+    if not jackpots_tramo.empty:
+        jp = jackpots_tramo.loc[jackpots_tramo['TotalJPWin'].idxmax()]
+        comentario_extra = (
+            f" El cliente obtuvo un jackpot de "
+            f"${jp['TotalJPWin']:,.2f} MXN con una apuesta de "
+            f"${jp['TotalBet']:,.2f} MXN en el juego {jp['GameId']}."
+        )
+    else:
+        ganancias_altas = tramo[tramo['clasificacion'] == 'ganancia_alta']
+        if not ganancias_altas.empty:
+            ga = ganancias_altas.loc[ganancias_altas['TotalWin'].idxmax()]
+            comentario_extra = (
+                f" El cliente obtuvo una ganancia de "
+                f"${ga['TotalWin']:,.2f} MXN con una apuesta de "
+                f"${ga['TotalBet']:,.2f} MXN en el juego {ga['GameId']}."
+            )
+
+    # Observación free games
     observacion_fg = ""
     if 'es_free_game_inusual' in df.columns:
         from modules.modulo3_anomalias import obtener_observaciones_free_games
@@ -70,10 +99,11 @@ def generar_reporte_whatsapp(df):
 
     reporte = (
         f"El usuario {player_id} tenía un balance inicial de ${balance_inicial:,.2f} MXN "
-        f"(fila {fila_inicio}), con apuestas de ${total_apostado:,.2f} MXN "
-        f"en los juegos principales: {juegos_str}, "
-        f"modificando su balance a ${balance_final:,.2f} MXN (fila {fila_fin}). "
-        f"El cliente {tipo_ganancia}.{observacion_fg}"
+        f"(fila {fila_inicio}), con apuestas de {apuestas_str} MXN "
+        f"en los juegos {juegos_str}, "
+        f"alcanzó un balance de ${balance_antes_retiro:,.2f} MXN antes del retiro. "
+        f"El cliente realizó un retiro de ${monto_encontrado:,.2f} MXN "
+        f"(fila {fila_retiro}).{comentario_extra}{observacion_fg}"
     )
 
     return reporte
@@ -89,7 +119,7 @@ def generar_reporte_qa(df_anomalias):
     lineas.append("-" * 50)
 
     for _, row in df_anomalias.iterrows():
-        fila_numero = row.name + 1  # +1 porque el índice empieza en 0
+        fila_numero = row.name + 1
         lineas.append(f"\n🔴 Tipo: {row['tipo_anomalia']}")
         lineas.append(f"   Fila en CSV      : {fila_numero}")
         lineas.append(f"   GameInstanceID : {row.get('GameInstanceId', 'N/A')}")
@@ -101,6 +131,8 @@ def generar_reporte_qa(df_anomalias):
             lineas.append(f"   Jackpot        : ${row['TotalJPWin']:,.2f} MXN")
         lineas.append(f"   Ratio          : x{round(row['ratio_ganancia'], 2)}")
         lineas.append(f"   Score anomalía : {round(row['anomalia_score'], 4)}")
+        if pd.notna(row.get('razon_anomalia')):
+            lineas.append(f"   Razón          : {row['razon_anomalia']}")
 
     return '\n'.join(lineas)
 
@@ -114,12 +146,10 @@ def mostrar_reportes(df):
         resultado = 'sospechoso'
         print("RESULTADO: ⚠️  SE DETECTARON ANOMALÍAS")
         print("=" * 60)
-
-        print("\n📋 REPORTE WHATSAPP (validación general):")
+        print("\n📋 REPORTE WHATSAPP:")
         print("-" * 60)
         reporte_whatsapp = generar_reporte_whatsapp(df)
         print(reporte_whatsapp)
-
         print("\n\n📋 REPORTE PARA QA:")
         print("-" * 60)
         reporte_qa = generar_reporte_qa(anomalias)
@@ -128,7 +158,6 @@ def mostrar_reportes(df):
         resultado = 'normal'
         print("RESULTADO: ✅  VALIDACIÓN NORMAL")
         print("=" * 60)
-
         print("\n📋 REPORTE WHATSAPP:")
         print("-" * 60)
         reporte_whatsapp = generar_reporte_whatsapp(df)
@@ -136,4 +165,4 @@ def mostrar_reportes(df):
         reporte_qa = None
 
     print("\n" + "=" * 60)
-    return resultado, reporte_whatsapp, reporte_qa  
+    return resultado, reporte_whatsapp, reporte_qa

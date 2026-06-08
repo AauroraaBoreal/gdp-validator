@@ -86,7 +86,7 @@ def logout():
     st.rerun()
 
 # --- PROCESAR CSV ---
-def procesar_archivo(uploaded_file):
+def procesar_archivo(uploaded_file, monto_validar=None):
     import tempfile
     from modules.modulo1_carga import cargar_csv
     from modules.modulo2_clasificacion import clasificar_eventos
@@ -114,7 +114,7 @@ def procesar_archivo(uploaded_file):
 
         anomalias = df[df['es_anomalia'] == True]
         resultado = 'sospechoso' if len(anomalias) > 0 else 'normal'
-        reporte_whatsapp = generar_reporte_whatsapp(df)
+        reporte_whatsapp = generar_reporte_whatsapp(df, monto_validar)
         reporte_qa = generar_reporte_qa(anomalias) if len(anomalias) > 0 else None
 
         validacion_id = guardar_validacion(df, resultado, reporte_whatsapp)
@@ -126,7 +126,7 @@ def procesar_archivo(uploaded_file):
     except Exception as e:
         os.unlink(tmp_path)
         raise e
-
+        
 # --- PÁGINA: VALIDAR ---
 def pagina_validar():
     st.markdown("## 📂 Nueva validación")
@@ -141,54 +141,188 @@ def pagina_validar():
     if uploaded_file:
         st.info(f"Archivo cargado: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
 
-        if st.button("🔍 Procesar archivo", type="primary", use_container_width=True):
-            try:
-                df, anomalias, resultado, reporte_whatsapp, reporte_qa = procesar_archivo(uploaded_file)
+        monto_validar = st.number_input(
+            "Monto del retiro a validar (MXN)",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            help="Ingresa el monto del retiro a validar."
+        )
 
-                # Métricas resumen
-                st.divider()
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total registros", f"{len(df):,}")
-                with col2:
-                    st.metric("Jugador", str(df['PlayerId'].iloc[0]))
-                with col3:
-                    st.metric("Anomalías detectadas", len(anomalias))
-                with col4:
-                    st.metric("Resultado", "⚠️ Sospechoso" if resultado == 'sospechoso' else "✅ Normal")
+        if st.button("🔍 Buscar retiro", type="primary", use_container_width=True):
+            import tempfile, os
+            from modules.modulo1_carga import cargar_csv
+            from modules.modulo2_clasificacion import clasificar_eventos
+            from modules.modulo3_anomalias import detectar_anomalias
+            from modules.modulo5_reportes import buscar_retiro
 
-                st.divider()
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+                tmp.write(uploaded_file.getvalue())
+                tmp_path = tmp.name
 
-                if resultado == 'normal':
-                    st.markdown("<div class='normal-card'>✅ <b>Validación normal</b> — No se detectaron anomalías en este archivo.</div>", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"<div class='anomalia-card'>⚠️ <b>Se detectaron {len(anomalias)} registros sospechosos</b> que requieren revisión.</div>", unsafe_allow_html=True)
+            with st.spinner("Cargando archivo..."):
+                df = cargar_csv(tmp_path)
+            with st.spinner("Clasificando eventos..."):
+                df = clasificar_eventos(df)
+            with st.spinner("Detectando anomalías..."):
+                df, _ = detectar_anomalias(df)
 
-                # Reportes
-                st.markdown("### 📋 Reporte WhatsApp")
-                st.code(reporte_whatsapp, language=None)
-                if st.button("📋 Copiar reporte WhatsApp"):
-                    st.write("✅ Copiado al portapapeles")
-                    st.session_state['clipboard'] = reporte_whatsapp
+            os.unlink(tmp_path)
 
-                if reporte_qa:
-                    st.markdown("### 🔴 Reporte para QA")
+            # Guardar df en session state
+            st.session_state['df_procesado'] = df
+
+            if float(monto_validar) > 0:
+                # Buscar todos los retiros cercanos al monto
+                import numpy as np
+                balance = df['Balance'].values
+                balance_change = df['BalanceChange'].values
+                diferencias = balance[:-1] - balance[1:] + balance_change[1:]
+
+                # Encontrar retiros con diferencia menor a $100 del monto ingresado
+                tolerancia = 100
+                indices_cercanos = np.where(
+                    np.abs(diferencias - float(monto_validar)) <= tolerancia
+                )[0]
+
+                if len(indices_cercanos) == 0:
+                    # Ampliar tolerancia si no hay resultados
+                    idx_min = np.argmin(np.abs(diferencias - float(monto_validar)))
+                    indices_cercanos = [idx_min]
+
+                retiros_encontrados = []
+                for idx in indices_cercanos:
+                    idx_retiro = idx + 1
+                    monto_real = diferencias[idx]
+                    fecha = df.loc[idx_retiro, 'EventTime']
+                    retiros_encontrados.append({
+                        'idx': idx_retiro,
+                        'monto': monto_real,
+                        'fecha': fecha,
+                        'fila': idx_retiro + 1
+                    })
+
+                st.session_state['retiros_encontrados'] = retiros_encontrados
+                st.session_state['monto_validar'] = float(monto_validar)
+
+            else:
+                st.session_state['retiros_encontrados'] = None
+                st.session_state['monto_validar'] = 0
+
+        # Mostrar opciones de retiro si hay múltiples
+        if 'retiros_encontrados' in st.session_state and st.session_state['retiros_encontrados']:
+            retiros = st.session_state['retiros_encontrados']
+            df = st.session_state['df_procesado']
+
+            if len(retiros) > 1:
+                st.warning(f"⚠️ Se encontraron **{len(retiros)} retiros** con montos similares. Selecciona el que deseas validar:")
+
+                opciones = {
+                    f"Fila {r['fila']} — ${r['monto']:,.2f} MXN — {pd.to_datetime(r['fecha']).strftime('%d/%m/%Y %H:%M')}": r
+                    for r in retiros
+                }
+
+                seleccion = st.radio(
+                    "Retiros encontrados:",
+                    list(opciones.keys()),
+                    key="seleccion_retiro"
+                )
+
+                retiro_seleccionado = opciones[seleccion]
+
+            else:
+                retiro_seleccionado = retiros[0]
+
+            if st.button("✅ Validar retiro seleccionado", type="primary", use_container_width=True):
+                st.session_state['retiro_confirmado'] = retiro_seleccionado
+
+        # Procesar una vez confirmado el retiro
+        if 'retiro_confirmado' in st.session_state and 'df_procesado' in st.session_state:
+            df = st.session_state['df_procesado']
+            retiro = st.session_state['retiro_confirmado']
+
+            from modules.modulo5_reportes import generar_reporte_whatsapp, generar_reporte_qa
+            from modules.modulo4_base_datos import crear_tablas, guardar_jugador, guardar_validacion, guardar_anomalias
+
+            idx_evento = retiro['idx']
+            monto_encontrado = retiro['monto']
+
+            # Generar reporte con índice específico
+            reporte_whatsapp = generar_reporte_whatsapp(
+                df,
+                monto_validar=st.session_state['monto_validar'],
+                idx_forzado=idx_evento
+            )
+
+            anomalias = df[df['es_anomalia'] == True]
+            resultado = 'sospechoso' if len(anomalias) > 0 else 'normal'
+            reporte_qa = generar_reporte_qa(anomalias) if len(anomalias) > 0 else None
+
+            # Guardar en BD
+            crear_tablas()
+            guardar_jugador(df)
+            validacion_id = guardar_validacion(df, resultado, reporte_whatsapp)
+            guardar_anomalias(anomalias, validacion_id)
+
+            # Mostrar métricas
+            st.divider()
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total registros", f"{len(df):,}")
+            with col2:
+                st.metric("Jugador", str(df['PlayerId'].iloc[0]))
+            with col3:
+                st.metric("Anomalías detectadas", len(anomalias))
+            with col4:
+                st.metric("Resultado", "⚠️ Sospechoso" if resultado == 'sospechoso' else "✅ Normal")
+
+            st.divider()
+
+            if resultado == 'normal':
+                st.markdown("<div class='normal-card'>✅ <b>Validación normal</b> — No se detectaron anomalías.</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='anomalia-card'>⚠️ <b>Se detectaron {len(anomalias)} registros sospechosos.</b></div>", unsafe_allow_html=True)
+
+            st.markdown("### 📋 Reporte WhatsApp")
+            st.code(reporte_whatsapp, language=None)
+
+            if reporte_qa:
+                st.markdown("### 🔴 Registros sospechosos")
+                df_qa = anomalias.copy()
+                df_qa['Fila'] = df_qa.index + 1
+                df_qa['Fecha y Hora'] = df_qa['EventTime'].astype(str)
+                df_qa['Juego'] = df_qa['GameId']
+                df_qa['Apuesta'] = df_qa['TotalBet'].apply(lambda x: f"${x:,.2f} MXN")
+                df_qa['Ganancia'] = df_qa['TotalWin'].apply(lambda x: f"${x:,.2f} MXN")
+                df_qa['Jackpot'] = df_qa['TotalJPWin'].apply(
+                    lambda x: f"${x:,.2f} MXN" if pd.notna(x) and x > 0 else "—"
+                )
+                df_qa['Ratio'] = df_qa['ratio_ganancia'].apply(lambda x: f"x{x:,.2f}")
+                df_qa['Tipo'] = df_qa['tipo_anomalia']
+                df_qa['Razón'] = df_qa['razon_anomalia'].fillna("—")
+                df_qa['GameInstanceID'] = df_qa['GameInstanceId']
+
+                st.dataframe(
+                    df_qa[['Fila', 'GameInstanceID', 'Fecha y Hora', 'Juego',
+                            'Apuesta', 'Ganancia', 'Jackpot', 'Ratio', 'Tipo', 'Razón']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Razón': st.column_config.TextColumn(width='large'),
+                        'GameInstanceID': st.column_config.TextColumn(width='medium'),
+                    }
+                )
+
+                with st.expander("📋 Ver reporte de texto"):
                     st.code(reporte_qa, language=None)
 
-                    # Tabla de anomalías
-                    st.markdown("### 📊 Detalle de anomalías")
-                    df_display = anomalias[[
-                        'EventTime', 'GameId', 'TotalBet', 'TotalWin',
-                        'TotalJPWin', 'ratio_ganancia', 'tipo_anomalia'
-                    ]].copy()
-                    df_display.index = df_display.index + 1
-                    df_display.columns = ['Fecha/Hora', 'Juego', 'Apuesta', 'Ganancia', 'Jackpot', 'Ratio', 'Tipo']
-                    df_display['Apuesta'] = df_display['Apuesta'].apply(lambda x: f"${x:,.2f}")
-                    df_display['Ganancia'] = df_display['Ganancia'].apply(lambda x: f"${x:,.2f}")
-                    st.dataframe(df_display, use_container_width=True)
-
-            except Exception as e:
-                st.error(f"Error al procesar el archivo: {str(e)}")
+            # Limpiar estado para nueva validación
+            if st.button("🔄 Nueva validación"):
+                for key in ['df_procesado', 'retiros_encontrados', 'retiro_confirmado',
+                            'monto_validar', 'seleccion_retiro']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
 
 # --- PÁGINA: HISTORIAL ---
 def pagina_historial():
