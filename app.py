@@ -231,7 +231,9 @@ def pagina_validar():
                 retiro_seleccionado = opciones[seleccion]
 
             else:
-                retiro_seleccionado = retiros[0]
+                r = retiros[0]
+                st.info(f"✅ Se encontró **1 retiro**: Fila {r['fila']} — ${r['monto']:,.2f} MXN — {pd.to_datetime(r['fecha']).strftime('%d/%m/%Y %H:%M')}")
+                retiro_seleccionado = r
 
             if st.button("✅ Validar retiro seleccionado", type="primary", use_container_width=True):
                 st.session_state['retiro_confirmado'] = retiro_seleccionado
