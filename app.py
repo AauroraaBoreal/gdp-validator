@@ -1,0 +1,447 @@
+import streamlit as st
+import pandas as pd
+import os
+from supabase import create_client
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- CONFIG ---
+st.set_page_config(
+    page_title="GDP Validator",
+    page_icon="🎰",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- ESTILOS ---
+st.markdown("""
+<style>
+    .main { background-color: #0f0f0f; }
+    .stApp { background-color: #0f0f0f; color: #ffffff; }
+    .metric-card {
+        background: #1a1a2e;
+        border: 1px solid #16213e;
+        border-radius: 10px;
+        padding: 20px;
+        text-align: center;
+    }
+    .anomalia-card {
+        background: #1a0000;
+        border-left: 4px solid #ff4444;
+        border-radius: 5px;
+        padding: 15px;
+        margin: 10px 0;
+    }
+    .normal-card {
+        background: #001a00;
+        border-left: 4px solid #44ff44;
+        border-radius: 5px;
+        padding: 15px;
+        margin: 10px 0;
+    }
+    .reporte-box {
+        background: #1a1a2e;
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 20px;
+        font-family: monospace;
+        white-space: pre-wrap;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- AUTENTICACIÓN ---
+def login():
+    st.markdown("<h1 style='text-align:center; color:#fff;'>🎰 GDP Validator</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center; color:#aaa;'>Sistema inteligente de validación de jugadas</p>", unsafe_allow_html=True)
+    st.divider()
+
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        st.markdown("### Iniciar sesión")
+        email = st.text_input("Correo electrónico", placeholder="analista@gdp.com")
+        password = st.text_input("Contraseña", type="password")
+
+        if st.button("Ingresar", use_container_width=True, type="primary"):
+            try:
+                response = supabase.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+                st.session_state['user'] = response.user
+                st.session_state['session'] = response.session
+                st.rerun()
+            except Exception as e:
+                st.error("Correo o contraseña incorrectos")
+
+def logout():
+    supabase.auth.sign_out()
+    st.session_state.clear()
+    st.rerun()
+
+# --- PROCESAR CSV ---
+def procesar_archivo(uploaded_file, monto_validar=None):
+    import tempfile
+    from modules.modulo1_carga import cargar_csv
+    from modules.modulo2_clasificacion import clasificar_eventos
+    from modules.modulo3_anomalias import detectar_anomalias
+    from modules.modulo4_base_datos import crear_tablas, guardar_jugador, guardar_validacion, guardar_anomalias
+    from modules.modulo5_reportes import generar_reporte_whatsapp, generar_reporte_qa
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
+
+    try:
+        with st.spinner("Cargando y preprocesando datos..."):
+            df = cargar_csv(tmp_path)
+
+        with st.spinner("Clasificando eventos..."):
+            df = clasificar_eventos(df)
+
+        with st.spinner("Detectando anomalías..."):
+            df, _ = detectar_anomalias(df)
+
+        with st.spinner("Guardando en base de datos..."):
+            crear_tablas()
+            guardar_jugador(df)
+
+        anomalias = df[df['es_anomalia'] == True]
+        resultado = 'sospechoso' if len(anomalias) > 0 else 'normal'
+        reporte_whatsapp = generar_reporte_whatsapp(df, monto_validar)
+        reporte_qa = generar_reporte_qa(anomalias) if len(anomalias) > 0 else None
+
+        validacion_id = guardar_validacion(df, resultado, reporte_whatsapp)
+        guardar_anomalias(anomalias, validacion_id)
+
+        os.unlink(tmp_path)
+        return df, anomalias, resultado, reporte_whatsapp, reporte_qa
+
+    except Exception as e:
+        os.unlink(tmp_path)
+        raise e
+        
+# --- PÁGINA: VALIDAR ---
+def pagina_validar():
+    st.markdown("## 📂 Nueva validación")
+    st.markdown("Sube el archivo CSV del jugador para procesarlo.")
+
+    uploaded_file = st.file_uploader(
+        "Selecciona el archivo CSV",
+        type=['csv'],
+        help="Archivo de jugadas exportado del sistema de GDP Studios"
+    )
+
+    if uploaded_file:
+        st.info(f"Archivo cargado: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+
+        monto_validar = st.number_input(
+            "Monto del retiro a validar (MXN)",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            help="Ingresa el monto del retiro a validar."
+        )
+
+        if st.button("🔍 Buscar retiro", type="primary", use_container_width=True):
+            import tempfile, os
+            from modules.modulo1_carga import cargar_csv
+            from modules.modulo2_clasificacion import clasificar_eventos
+            from modules.modulo3_anomalias import detectar_anomalias
+            from modules.modulo5_reportes import buscar_retiro
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+                tmp.write(uploaded_file.getvalue())
+                tmp_path = tmp.name
+
+            with st.spinner("Cargando archivo..."):
+                df = cargar_csv(tmp_path)
+            with st.spinner("Clasificando eventos..."):
+                df = clasificar_eventos(df)
+            with st.spinner("Detectando anomalías..."):
+                df, _ = detectar_anomalias(df)
+
+            os.unlink(tmp_path)
+
+            # Guardar df en session state
+            st.session_state['df_procesado'] = df
+
+            if float(monto_validar) > 0:
+                # Buscar todos los retiros cercanos al monto
+                import numpy as np
+                balance = df['Balance'].values
+                balance_change = df['BalanceChange'].values
+                diferencias = -(balance[:-1] - balance[1:] + balance_change[1:])
+
+                # Encontrar retiros con diferencia menor a $100 del monto ingresado
+                tolerancia = 100
+                indices_cercanos = np.where(
+                    np.abs(diferencias - float(monto_validar)) <= tolerancia
+                )[0]
+
+                if len(indices_cercanos) == 0:
+                    # Ampliar tolerancia si no hay resultados
+                    idx_min = np.argmin(np.abs(diferencias - float(monto_validar)))
+                    indices_cercanos = [idx_min]
+
+                retiros_encontrados = []
+                for idx in indices_cercanos:
+                    idx_retiro = idx + 1
+                    monto_real = diferencias[idx]
+                    fecha = df.loc[idx_retiro, 'EventTime']
+                    retiros_encontrados.append({
+                        'idx': idx_retiro,
+                        'monto': monto_real,
+                        'fecha': fecha,
+                        'fila': idx_retiro + 1
+                    })
+
+                st.session_state['retiros_encontrados'] = retiros_encontrados
+                st.session_state['monto_validar'] = float(monto_validar)
+
+            else:
+                st.session_state['retiros_encontrados'] = None
+                st.session_state['monto_validar'] = 0
+
+        # Mostrar opciones de retiro si hay múltiples
+        if 'retiros_encontrados' in st.session_state and st.session_state['retiros_encontrados']:
+            retiros = st.session_state['retiros_encontrados']
+            df = st.session_state['df_procesado']
+
+            if len(retiros) > 1:
+                st.warning(f"⚠️ Se encontraron **{len(retiros)} retiros** con montos similares. Selecciona el que deseas validar:")
+
+                opciones = {
+                    f"Fila {r['fila']} — ${r['monto']:,.2f} MXN — {pd.to_datetime(r['fecha']).strftime('%d/%m/%Y %H:%M')}": r
+                    for r in retiros
+                }
+
+                seleccion = st.radio(
+                    "Retiros encontrados:",
+                    list(opciones.keys()),
+                    key="seleccion_retiro"
+                )
+
+                retiro_seleccionado = opciones[seleccion]
+
+            else:
+                r = retiros[0]
+                st.info(f"✅ Se encontró **1 retiro**: Fila {r['fila']} — ${r['monto']:,.2f} MXN — {pd.to_datetime(r['fecha']).strftime('%d/%m/%Y %H:%M')}")
+                retiro_seleccionado = r
+
+            if st.button("✅ Validar retiro seleccionado", type="primary", use_container_width=True):
+                st.session_state['retiro_confirmado'] = retiro_seleccionado
+
+        # Procesar una vez confirmado el retiro
+        if 'retiro_confirmado' in st.session_state and 'df_procesado' in st.session_state:
+            df = st.session_state['df_procesado']
+            retiro = st.session_state['retiro_confirmado']
+
+            from modules.modulo5_reportes import generar_reporte_whatsapp, generar_reporte_qa
+            from modules.modulo4_base_datos import crear_tablas, guardar_jugador, guardar_validacion, guardar_anomalias
+
+            idx_evento = retiro['idx']
+            monto_encontrado = retiro['monto']
+
+            # Generar reporte con índice específico
+            reporte_whatsapp = generar_reporte_whatsapp(
+                df,
+                monto_validar=st.session_state['monto_validar'],
+                idx_forzado=idx_evento
+            )
+
+            anomalias = df[df['es_anomalia'] == True]
+            resultado = 'sospechoso' if len(anomalias) > 0 else 'normal'
+            reporte_qa = generar_reporte_qa(anomalias) if len(anomalias) > 0 else None
+
+            # Guardar en BD
+            crear_tablas()
+            guardar_jugador(df)
+            validacion_id = guardar_validacion(df, resultado, reporte_whatsapp)
+            guardar_anomalias(anomalias, validacion_id)
+
+            # Mostrar métricas
+            st.divider()
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total registros", f"{len(df):,}")
+            with col2:
+                st.metric("Jugador", str(df['PlayerId'].iloc[0]))
+            with col3:
+                st.metric("Anomalías detectadas", len(anomalias))
+            with col4:
+                st.metric("Resultado", "⚠️ Sospechoso" if resultado == 'sospechoso' else "✅ Normal")
+
+            st.divider()
+
+            if resultado == 'normal':
+                st.markdown("<div class='normal-card'>✅ <b>Validación normal</b> — No se detectaron anomalías.</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='anomalia-card'>⚠️ <b>Se detectaron {len(anomalias)} registros sospechosos.</b></div>", unsafe_allow_html=True)
+
+            st.markdown("### 📋 Reporte WhatsApp")
+            st.code(reporte_whatsapp, language=None)
+
+            if reporte_qa:
+                st.markdown("### 🔴 Registros sospechosos")
+                df_qa = anomalias.copy()
+                df_qa['Fila'] = df_qa.index + 1
+                df_qa['Fecha y Hora'] = df_qa['EventTime'].astype(str)
+                df_qa['Juego'] = df_qa['GameId']
+                df_qa['Apuesta'] = df_qa['TotalBet'].apply(lambda x: f"${x:,.2f} MXN")
+                df_qa['Ganancia'] = df_qa['TotalWin'].apply(lambda x: f"${x:,.2f} MXN")
+                df_qa['Jackpot'] = df_qa['TotalJPWin'].apply(
+                    lambda x: f"${x:,.2f} MXN" if pd.notna(x) and x > 0 else "—"
+                )
+                df_qa['Ratio'] = df_qa['ratio_ganancia'].apply(lambda x: f"x{x:,.2f}")
+                df_qa['Tipo'] = df_qa['tipo_anomalia']
+                df_qa['Razón'] = df_qa['razon_anomalia'].fillna("—")
+                df_qa['GameInstanceID'] = df_qa['GameInstanceId']
+
+                st.dataframe(
+                    df_qa[['Fila', 'GameInstanceID', 'Fecha y Hora', 'Juego',
+                            'Apuesta', 'Ganancia', 'Jackpot', 'Ratio', 'Tipo', 'Razón']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Razón': st.column_config.TextColumn(width='large'),
+                        'GameInstanceID': st.column_config.TextColumn(width='medium'),
+                    }
+                )
+
+                with st.expander("📋 Ver reporte de texto"):
+                    st.code(reporte_qa, language=None)
+
+            # Limpiar estado para nueva validación
+            if st.button("🔄 Nueva validación"):
+                for key in ['df_procesado', 'retiros_encontrados', 'retiro_confirmado',
+                            'monto_validar', 'seleccion_retiro']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+
+# --- PÁGINA: HISTORIAL ---
+def pagina_historial():
+    st.markdown("## 📜 Historial de validaciones")
+
+    try:
+        response = supabase.table('validaciones').select(
+            'validacion_id, player_id, fecha_inicio, fecha_fin, total_registros, resultado, fecha_procesamiento'
+        ).order('fecha_procesamiento', desc=True).limit(50).execute()
+
+        if not response.data:
+            st.info("No hay validaciones registradas aún.")
+            return
+
+        df_hist = pd.DataFrame(response.data)
+        df_hist['fecha_procesamiento'] = pd.to_datetime(df_hist['fecha_procesamiento']).dt.strftime('%d/%m/%Y %H:%M')
+        df_hist['fecha_inicio'] = pd.to_datetime(df_hist['fecha_inicio']).dt.strftime('%d/%m/%Y')
+        df_hist['fecha_fin'] = pd.to_datetime(df_hist['fecha_fin']).dt.strftime('%d/%m/%Y')
+        df_hist['resultado'] = df_hist['resultado'].apply(
+            lambda x: '⚠️ Sospechoso' if x == 'sospechoso' else '✅ Normal'
+        )
+        df_hist.columns = ['ID', 'Jugador', 'Desde', 'Hasta', 'Registros', 'Resultado', 'Procesado']
+
+        # Filtro por jugador
+        jugadores = ['Todos'] + sorted(df_hist['Jugador'].unique().tolist())
+        filtro = st.selectbox("Filtrar por jugador", jugadores)
+        if filtro != 'Todos':
+            df_hist = df_hist[df_hist['Jugador'] == filtro]
+
+        st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+        # Ver detalle de anomalías
+        st.markdown("### 🔍 Ver anomalías de una validación")
+        validacion_id = st.number_input("ID de validación", min_value=1, step=1)
+        if st.button("Ver anomalías"):
+            anom_response = supabase.table('anomalias').select('*').eq(
+                'validacion_id', validacion_id
+            ).execute()
+            if not anom_response.data:
+                st.info("Esta validación no tiene anomalías registradas.")
+            else:
+                df_anom = pd.DataFrame(anom_response.data)
+                st.dataframe(df_anom[[
+                    'event_time', 'game_id', 'total_bet',
+                    'total_win', 'tipo_anomalia'
+                ]], use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error al cargar historial: {str(e)}")
+
+# --- PÁGINA: JUGADORES ---
+def pagina_jugadores():
+    st.markdown("## 👤 Perfil de jugadores")
+
+    try:
+        response = supabase.table('jugadores').select('*').order(
+            'ultima_actualizacion', desc=True
+        ).execute()
+
+        if not response.data:
+            st.info("No hay jugadores registrados aún.")
+            return
+
+        df_jug = pd.DataFrame(response.data)
+        df_jug['ultima_actualizacion'] = pd.to_datetime(
+            df_jug['ultima_actualizacion']
+        ).dt.strftime('%d/%m/%Y %H:%M')
+        df_jug['apuesta_promedio'] = df_jug['apuesta_promedio'].apply(lambda x: f"${x:,.2f}")
+        df_jug['apuesta_max'] = df_jug['apuesta_max'].apply(lambda x: f"${x:,.2f}")
+        df_jug['ganancia_max'] = df_jug['ganancia_max'].apply(lambda x: f"${x:,.2f}")
+
+        st.dataframe(df_jug[[
+            'player_id', 'currency', 'apuesta_promedio', 'apuesta_max',
+            'ganancia_max', 'ratio_promedio', 'total_sesiones', 'ultima_actualizacion'
+        ]].rename(columns={
+            'player_id': 'Jugador',
+            'currency': 'Moneda',
+            'apuesta_promedio': 'Apuesta Prom.',
+            'apuesta_max': 'Apuesta Máx.',
+            'ganancia_max': 'Ganancia Máx.',
+            'ratio_promedio': 'Ratio Prom.',
+            'total_sesiones': 'Sesiones',
+            'ultima_actualizacion': 'Última validación'
+        }), use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Error al cargar jugadores: {str(e)}")
+
+# --- NAVEGACIÓN PRINCIPAL ---
+def main():
+    if 'user' not in st.session_state:
+        login()
+        return
+
+    user = st.session_state['user']
+
+    with st.sidebar:
+        st.markdown("### 🎰 GDP Validator")
+        st.markdown(f"👤 **{user.email}**")
+        st.divider()
+
+        pagina = st.radio(
+            "Navegación",
+            ["📂 Nueva validación", "📜 Historial", "👤 Jugadores"],
+            label_visibility="collapsed"
+        )
+
+        st.divider()
+        if st.button("Cerrar sesión", use_container_width=True):
+            logout()
+
+    if pagina == "📂 Nueva validación":
+        pagina_validar()
+    elif pagina == "📜 Historial":
+        pagina_historial()
+    elif pagina == "👤 Jugadores":
+        pagina_jugadores()
+
+if __name__ == "__main__":
+    main()
