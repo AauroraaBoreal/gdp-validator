@@ -1,7 +1,10 @@
+# pyrefly: ignore [missing-import]
 import streamlit as st
 import pandas as pd
 import os
+# pyrefly: ignore [missing-import]
 from supabase import create_client
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -89,7 +92,6 @@ def logout():
 def procesar_archivo(uploaded_file, monto_validar=None):
     import tempfile
     from modules.modulo1_carga import cargar_csv
-    from modules.modulo2_clasificacion import clasificar_eventos
     from modules.modulo3_anomalias import detectar_anomalias
     from modules.modulo4_base_datos import crear_tablas, guardar_jugador, guardar_validacion, guardar_anomalias
     from modules.modulo5_reportes import generar_reporte_whatsapp, generar_reporte_qa
@@ -101,9 +103,6 @@ def procesar_archivo(uploaded_file, monto_validar=None):
     try:
         with st.spinner("Cargando y preprocesando datos..."):
             df = cargar_csv(tmp_path)
-
-        with st.spinner("Clasificando eventos..."):
-            df = clasificar_eventos(df)
 
         with st.spinner("Detectando anomalías..."):
             df, _ = detectar_anomalias(df)
@@ -152,7 +151,6 @@ def pagina_validar():
         if st.button("🔍 Buscar retiro", type="primary", use_container_width=True):
             import tempfile, os
             from modules.modulo1_carga import cargar_csv
-            from modules.modulo2_clasificacion import clasificar_eventos
             from modules.modulo3_anomalias import detectar_anomalias
             from modules.modulo5_reportes import buscar_retiro
 
@@ -162,8 +160,6 @@ def pagina_validar():
 
             with st.spinner("Cargando archivo..."):
                 df = cargar_csv(tmp_path)
-            with st.spinner("Clasificando eventos..."):
-                df = clasificar_eventos(df)
             with st.spinner("Detectando anomalías..."):
                 df, _ = detectar_anomalias(df)
 
@@ -174,32 +170,56 @@ def pagina_validar():
 
             if float(monto_validar) > 0:
                 # Buscar todos los retiros cercanos al monto
+                # pyrefly: ignore [missing-import]
                 import numpy as np
                 balance = df['Balance'].values
                 balance_change = df['BalanceChange'].values
                 diferencias = -(balance[:-1] - balance[1:] + balance_change[1:])
 
-                # Encontrar retiros con diferencia menor a $100 del monto ingresado
-                tolerancia = 100
-                indices_cercanos = np.where(
-                    np.abs(diferencias - float(monto_validar)) <= tolerancia
-                )[0]
+                # Encontrar retiros con diferencia menor a $1000 del monto ingresado
+                tolerancia = 1000
 
-                if len(indices_cercanos) == 0:
-                    # Ampliar tolerancia si no hay resultados
-                    idx_min = np.argmin(np.abs(diferencias - float(monto_validar)))
-                    indices_cercanos = [idx_min]
+                # Solo cuenta retiros de evento 0 o del último evento de free games (EventId != '0' pero el siguiente es '0' o cambia de juego)
+                event_ids = df['EventId'].astype(str).str.strip().values
+                mismo_game = (df['GameInstanceId'].values[:-1] == df['GameInstanceId'].values[1:])
+
+                cond_inicio_cero = (event_ids[:-1] == '0')
+                es_free_game_inicio = (event_ids[:-1] != '0')
+                siguiente_diferente = ~mismo_game
+                siguiente_cero = (event_ids[1:] == '0')
+                cond_ultimo_free = es_free_game_inicio & (siguiente_diferente | siguiente_cero)
+
+                mask_permitido = cond_inicio_cero | cond_ultimo_free
+                mask_retiros = (diferencias < -0.01) & mask_permitido
+
+                # Para evitar considerar recargas (diferencias > 0) como retiros,
+                # calculamos la distancia absoluta de los retiros reales (diferencias < -0.01).
+                diff_abs = np.full(len(diferencias), np.inf)
+                if np.any(mask_retiros):
+                    diff_abs[mask_retiros] = np.abs(diferencias[mask_retiros] + float(monto_validar))
+
+                indices_cercanos = np.where(diff_abs <= tolerancia)[0]
 
                 retiros_encontrados = []
                 for idx in indices_cercanos:
                     idx_retiro = idx + 1
-                    monto_real = diferencias[idx]
+                    monto_real = abs(diferencias[idx])
                     fecha = df.loc[idx_retiro, 'EventTime']
+                    # La fila del retiro: si hay una fila saltada en el CSV, es esa. Si no, es la fila donde se refleja el salto (idx_retiro)
+                    if '_fila_csv' in df.columns:
+                        fila_antes = int(df.loc[idx, '_fila_csv'])
+                        fila_despues = int(df.loc[idx_retiro, '_fila_csv'])
+                        if fila_despues - fila_antes > 1:
+                            fila_csv = fila_antes + 1 # Fila omitida en la lectura (ej. sin EventTime)
+                        else:
+                            fila_csv = fila_despues # Reflejado entre estas dos, apuntamos a la posterior
+                    else:
+                        fila_csv = idx_retiro + 1
                     retiros_encontrados.append({
                         'idx': idx_retiro,
                         'monto': monto_real,
                         'fecha': fecha,
-                        'fila': idx_retiro + 1
+                        'fila': fila_csv
                     })
 
                 st.session_state['retiros_encontrados'] = retiros_encontrados
@@ -237,6 +257,8 @@ def pagina_validar():
 
             if st.button("✅ Validar retiro seleccionado", type="primary", use_container_width=True):
                 st.session_state['retiro_confirmado'] = retiro_seleccionado
+        elif 'df_procesado' in st.session_state and st.session_state.get('monto_validar', 0) > 0:
+            st.error(f"❌ No se encontró ningún retiro cercano a **${st.session_state['monto_validar']:,.2f} MXN** en el archivo cargado.")
 
         # Procesar una vez confirmado el retiro
         if 'retiro_confirmado' in st.session_state and 'df_procesado' in st.session_state:
@@ -340,7 +362,10 @@ def pagina_historial():
             return
 
         df_hist = pd.DataFrame(response.data)
-        df_hist['fecha_procesamiento'] = pd.to_datetime(df_hist['fecha_procesamiento']).dt.strftime('%d/%m/%Y %H:%M')
+        df_hist['fecha_procesamiento'] = pd.to_datetime(df_hist['fecha_procesamiento'])
+        if df_hist['fecha_procesamiento'].dt.tz is None:
+            df_hist['fecha_procesamiento'] = df_hist['fecha_procesamiento'].dt.tz_localize('UTC')
+        df_hist['fecha_procesamiento'] = df_hist['fecha_procesamiento'].dt.tz_convert('America/Lima').dt.strftime('%d/%m/%Y %H:%M')
         df_hist['fecha_inicio'] = pd.to_datetime(df_hist['fecha_inicio']).dt.strftime('%d/%m/%Y')
         df_hist['fecha_fin'] = pd.to_datetime(df_hist['fecha_fin']).dt.strftime('%d/%m/%Y')
         df_hist['resultado'] = df_hist['resultado'].apply(
@@ -389,9 +414,10 @@ def pagina_jugadores():
             return
 
         df_jug = pd.DataFrame(response.data)
-        df_jug['ultima_actualizacion'] = pd.to_datetime(
-            df_jug['ultima_actualizacion']
-        ).dt.strftime('%d/%m/%Y %H:%M')
+        df_jug['ultima_actualizacion'] = pd.to_datetime(df_jug['ultima_actualizacion'])
+        if df_jug['ultima_actualizacion'].dt.tz is None:
+            df_jug['ultima_actualizacion'] = df_jug['ultima_actualizacion'].dt.tz_localize('UTC')
+        df_jug['ultima_actualizacion'] = df_jug['ultima_actualizacion'].dt.tz_convert('America/Lima').dt.strftime('%d/%m/%Y %H:%M')
         df_jug['apuesta_promedio'] = df_jug['apuesta_promedio'].apply(lambda x: f"${x:,.2f}")
         df_jug['apuesta_max'] = df_jug['apuesta_max'].apply(lambda x: f"${x:,.2f}")
         df_jug['ganancia_max'] = df_jug['ganancia_max'].apply(lambda x: f"${x:,.2f}")
@@ -431,6 +457,7 @@ def main():
             ["📂 Nueva validación", "📜 Historial", "👤 Jugadores"],
             label_visibility="collapsed"
         )
+
 
         st.divider()
         if st.button("Cerrar sesión", use_container_width=True):

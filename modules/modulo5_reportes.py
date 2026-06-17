@@ -13,11 +13,32 @@ def buscar_retiro(df, monto_retiro):
     balance_change = df['BalanceChange'].values
 
     # Calcular diferencias vectorialmente para todas las filas consecutivas
+    # Formula: -(Balance[i] - Balance[i+1] + BalanceChange[i+1])
     diferencias = -(balance[:-1] - balance[1:] + balance_change[1:])
 
     # Buscar el índice con diferencia más cercana al monto ingresado
-    diff_abs = np.abs(diferencias - float(monto_retiro))
+    # Solo cuenta retiros de evento 0 o del último evento de free games (EventId != '0' pero el siguiente es '0' o cambia de juego)
+    event_ids = df['EventId'].astype(str).str.strip().values
+    mismo_game = (df['GameInstanceId'].values[:-1] == df['GameInstanceId'].values[1:])
+
+    cond_inicio_cero = (event_ids[:-1] == '0')
+    es_free_game_inicio = (event_ids[:-1] != '0')
+    siguiente_diferente = ~mismo_game
+    siguiente_cero = (event_ids[1:] == '0')
+    cond_ultimo_free = es_free_game_inicio & (siguiente_diferente | siguiente_cero)
+
+    mask_permitido = cond_inicio_cero | cond_ultimo_free
+    mask_retiros = (diferencias < -0.01) & mask_permitido
+
+    diff_abs = np.full(len(diferencias), np.inf)
+    if np.any(mask_retiros):
+        diff_abs[mask_retiros] = np.abs(diferencias[mask_retiros] + float(monto_retiro))
+
     idx_min = np.argmin(diff_abs)
+
+    # Si la diferencia más cercana supera la tolerancia de 1000 pesos, consideramos que no se encontró
+    if diff_abs[idx_min] > 1000.0:
+        return None, None
 
     # idx_min corresponde a la fila i, el retiro ocurre en i+1
     idx_retiro = idx_min + 1
@@ -35,24 +56,57 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
         monto_encontrado = -(balance[idx_evento - 1] - balance[idx_evento] + balance_change[idx_evento])
     elif monto_validar is not None and float(monto_validar) > 0:
         idx_evento, monto_encontrado = buscar_retiro(df, monto_validar)
+        if idx_evento is None:
+            raise ValueError(f"No se encontró ningún retiro cercano a ${float(monto_validar):,.2f} MXN en el archivo.")
     else:
         balance = df['Balance'].values
         balance_change = df['BalanceChange'].values
         diferencias = -(balance[:-1] - balance[1:] + balance_change[1:])
-        idx_min = np.argmax(diferencias)
-        idx_evento = idx_min + 1
-        monto_encontrado = diferencias[idx_min]
+
+        # Solo cuenta retiros de evento 0 o del último evento de free games
+        event_ids = df['EventId'].astype(str).str.strip().values
+        mismo_game = (df['GameInstanceId'].values[:-1] == df['GameInstanceId'].values[1:])
+
+        cond_inicio_cero = (event_ids[:-1] == '0')
+        es_free_game_inicio = (event_ids[:-1] != '0')
+        siguiente_diferente = ~mismo_game
+        siguiente_cero = (event_ids[1:] == '0')
+        cond_ultimo_free = es_free_game_inicio & (siguiente_diferente | siguiente_cero)
+
+        mask_permitido = cond_inicio_cero | cond_ultimo_free
+        mask_retiros = (diferencias < -0.01) & mask_permitido
+
+        if np.any(mask_retiros):
+            diferencias_filtradas = np.full(len(diferencias), np.inf)
+            diferencias_filtradas[mask_retiros] = diferencias[mask_retiros]
+            idx_min = np.argmin(diferencias_filtradas)
+            idx_evento = idx_min + 1
+            monto_encontrado = diferencias[idx_min]
+        else:
+            idx_evento = 1
+            monto_encontrado = 0.0
 
     evento_principal = df.loc[idx_evento]
 
-    # Última recarga antes del retiro
-    recargas = df[(df['clasificacion'] == 'recarga') & (df.index < idx_evento)]
-    idx_recarga = recargas.index[-1] if not recargas.empty else 0
+    # Última recarga antes del retiro (recarga es cuando la diferencia > 0)
+    balance = df['Balance'].values
+    balance_change = df['BalanceChange'].values
+    diferencias_todas = -(balance[:-1] - balance[1:] + balance_change[1:])
+    indices_recargas = np.where(diferencias_todas[:idx_evento] > 0)[0]
+    idx_recarga = indices_recargas[-1] + 1 if len(indices_recargas) > 0 else 0
 
     tramo = df.loc[idx_recarga:idx_evento]
     balance_inicial = tramo['BalanceStart'].iloc[0]
-    fila_inicio = idx_recarga + 1
-    fila_retiro = idx_evento + 1
+    fila_inicio = int(df.loc[idx_recarga, '_fila_csv']) if '_fila_csv' in df.columns else idx_recarga + 1
+    if '_fila_csv' in df.columns:
+        fila_antes = int(df.loc[idx_evento - 1, '_fila_csv']) if (idx_evento - 1) in df.index else int(df.loc[idx_evento, '_fila_csv']) - 1
+        fila_despues = int(df.loc[idx_evento, '_fila_csv'])
+        if fila_despues - fila_antes > 1:
+            fila_retiro = fila_antes + 1
+        else:
+            fila_retiro = fila_despues
+    else:
+        fila_retiro = idx_evento + 1
 
     # Balance justo antes del retiro (fila anterior al retiro)
     idx_anterior = idx_evento - 1
@@ -80,7 +134,7 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
             f"${jp['TotalBet']:,.2f} MXN en el juego {jp['GameId']}."
         )
     else:
-        ganancias_altas = tramo[tramo['clasificacion'] == 'ganancia_alta']
+        ganancias_altas = tramo[tramo['ratio_ganancia'] >= 26]
         if not ganancias_altas.empty:
             ga = ganancias_altas.loc[ganancias_altas['TotalWin'].idxmax()]
             comentario_extra = (
@@ -114,7 +168,9 @@ def generar_reporte_qa(df_anomalias):
 
     lineas = []
     lineas.append("⚠️ REPORTE DE ALERTA - ÁREA DE QA")
-    lineas.append(f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    from datetime import timezone, timedelta
+    tz_peru = timezone(timedelta(hours=-5))
+    lineas.append(f"Fecha de generación: {datetime.now(tz_peru).strftime('%d/%m/%Y %H:%M')}")
     lineas.append(f"Total de registros sospechosos: {len(df_anomalias)}")
     lineas.append("-" * 50)
 

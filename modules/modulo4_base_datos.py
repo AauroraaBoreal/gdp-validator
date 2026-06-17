@@ -1,5 +1,7 @@
 import os
+# pyrefly: ignore [missing-import]
 from sqlalchemy import create_engine, text
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 import pandas as pd
 
@@ -158,7 +160,7 @@ def guardar_anomalias(df_anomalias, validacion_id):
                 'total_win': float(row['TotalWin']),
                 'total_jp_win': float(row['TotalJPWin']) if pd.notna(row.get('TotalJPWin')) else None,
                 'tipo_anomalia': str(row['tipo_anomalia']),
-                'descripcion': str(row['razon_anomalia']) if pd.notna(row.get('razon_anomalia')) else f"Ratio: {round(row['ratio_ganancia'], 2)}x — Clasificación: {row['clasificacion']}",
+                'descripcion': str(row['razon_anomalia']) if pd.notna(row.get('razon_anomalia')) else f"Ratio: {round(row['ratio_ganancia'], 2)}x",
                 'score_anomalia': float(row['anomalia_score'])
             })
         conn.commit()
