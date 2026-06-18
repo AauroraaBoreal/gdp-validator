@@ -34,6 +34,7 @@ def obtener_formato_moneda(df_or_row):
         else:
             curr = 'MXN'
 
+
         if curr == 'PEN':
             return 'S/', 'PEN'
         else:
@@ -500,20 +501,80 @@ def pagina_historial():
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
         # Ver detalle de anomalías
-        st.markdown("### 🔍 Ver anomalías de una validación")
+        st.markdown("### 🔍 Ver detalles de una validación")
         validacion_id = st.number_input("ID de validación", min_value=1, step=1)
-        if st.button("Ver anomalías"):
-            anom_response = supabase.table('anomalias').select('*').eq(
-                'validacion_id', validacion_id
-            ).execute()
-            if not anom_response.data:
-                st.info("Esta validación no tiene anomalías registradas.")
+        if st.button("Ver detalles"):
+            val_resp = supabase.table('validaciones').select('top_juegos_json, player_id').eq('validacion_id', validacion_id).execute()
+            anom_response = supabase.table('anomalias').select('*').eq('validacion_id', validacion_id).execute()
+
+            if not val_resp.data:
+                st.error("No se encontró ninguna validación con el ID ingresado.")
             else:
-                df_anom = pd.DataFrame(anom_response.data)
-                st.dataframe(df_anom[[
-                    'event_time', 'game_id', 'total_bet',
-                    'total_win', 'tipo_anomalia'
-                ]], use_container_width=True)
+                row_val = val_resp.data[0]
+                if row_val.get('top_juegos_json'):
+                    import json
+                    try:
+                        data_juegos = json.loads(row_val['top_juegos_json'])
+                        if data_juegos:
+                            df_top_juegos = pd.DataFrame(data_juegos)
+                            st.markdown("#### 📊 Top 5 Juegos en esta Validación")
+                            col_chart, col_legend = st.columns([2, 1])
+                            with col_chart:
+                                import altair as alt
+                                chart = alt.Chart(df_top_juegos).mark_bar(
+                                    cornerRadiusTopLeft=5,
+                                    cornerRadiusTopRight=5
+                                ).encode(
+                                    x=alt.X('Juego:N', sort='-y', title='Juego'),
+                                    y=alt.Y('Jugadas:Q', title='Cantidad de Jugadas'),
+                                    color=alt.Color('Juego:N', scale=alt.Scale(scheme='darkmulti'), legend=None),
+                                    tooltip=['Juego', 'Jugadas', alt.Tooltip('Porcentaje', format='.2f', title='Porcentaje (%)')]
+                                ).properties(
+                                    height=250
+                                ).configure_axis(
+                                    labelColor='#cccccc',
+                                    titleColor='#ffffff',
+                                    grid=False
+                                ).configure_view(
+                                    strokeWidth=0
+                                )
+                                st.altair_chart(chart, use_container_width=True)
+                            with col_legend:
+                                st.markdown("<div style='padding-top: 10px;'><b>Resumen de Actividad:</b></div>", unsafe_allow_html=True)
+                                for i, row_j in df_top_juegos.iterrows():
+                                    st.write(f"🎮 **{row_j['Juego']}**: {row_j['Jugadas']:,} jugadas ({row_j['Porcentaje']:.1f}%)")
+                    except Exception as e:
+                        st.warning(f"No se pudo cargar el gráfico de esta sesión: {e}")
+
+                st.markdown("#### 🔴 Registros sospechosos")
+                if not anom_response.data:
+                    st.info("Esta validación no tiene anomalías registradas.")
+                else:
+                    df_anom = pd.DataFrame(anom_response.data)
+                    player_resp = supabase.table('jugadores').select('currency').eq('player_id', row_val.get('player_id')).execute()
+                    simbolo_an = '$'
+                    moneda_an = 'MXN'
+                    if player_resp.data:
+                        curr_val = str(player_resp.data[0].get('currency', 'MXN')).strip().upper()
+                        if curr_val == 'PEN':
+                            simbolo_an = 'S/'
+                            moneda_an = 'PEN'
+
+                    df_anom['Fecha y Hora'] = pd.to_datetime(df_anom['event_time']).dt.strftime('%d/%m/%Y %H:%M')
+                    df_anom['Apuesta'] = df_anom['total_bet'].apply(lambda x: f"{simbolo_an}{float(x):,.2f} {moneda_an}")
+                    df_anom['Ganancia'] = df_anom['total_win'].apply(lambda x: f"{simbolo_an}{float(x):,.2f} {moneda_an}")
+                    df_anom['Jackpot'] = df_anom['total_jp_win'].apply(
+                        lambda x: f"{simbolo_an}{float(x):,.2f} {moneda_an}" if pd.notna(x) and float(x) > 0 else "—"
+                    )
+
+                    st.dataframe(df_anom[[
+                        'Fecha y Hora', 'game_id', 'Apuesta',
+                        'Ganancia', 'Jackpot', 'tipo_anomalia', 'descripcion'
+                    ]].rename(columns={
+                        'game_id': 'Juego',
+                        'tipo_anomalia': 'Tipo',
+                        'descripcion': 'Descripción'
+                    }), use_container_width=True, hide_index=True)
 
     except Exception as e:
         st.error(f"Error al cargar historial: {str(e)}")
@@ -560,7 +621,70 @@ def pagina_jugadores():
             'ultima_actualizacion': 'Última validación'
         }), use_container_width=True, hide_index=True)
 
+        # Agregar el top global de juegos al final del apartado de jugadores
+        st.divider()
+        st.markdown("### 📊 Top 5 Juegos más Jugados en General (Global)")
+        
+        val_resp = supabase.table('validaciones').select('top_juegos_json').execute()
+        if val_resp.data:
+            import json
+            global_counts = {}
+            for item in val_resp.data:
+                json_str = item.get('top_juegos_json')
+                if json_str:
+                    try:
+                        records = json.loads(json_str)
+                        for r in records:
+                            game = r['Juego']
+                            plays = int(r['Jugadas'])
+                            global_counts[game] = global_counts.get(game, 0) + plays
+                    except Exception:
+                        pass
+            
+            if global_counts:
+                sorted_games = sorted(global_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+                total_plays = sum([g[1] for g in sorted_games])
+                
+                df_global = pd.DataFrame({
+                    'Juego': [g[0] for g in sorted_games],
+                    'Jugadas': [g[1] for g in sorted_games],
+                    'Porcentaje': [(g[1] / total_plays * 100) if total_plays > 0 else 0.0 for g in sorted_games]
+                })
+                
+                col_chart, col_legend = st.columns([2, 1])
+                with col_chart:
+                    import altair as alt
+                    chart = alt.Chart(df_global).mark_bar(
+                        cornerRadiusTopLeft=5,
+                        cornerRadiusTopRight=5
+                    ).encode(
+                        x=alt.X('Juego:N', sort='-y', title='Juego'),
+                        y=alt.Y('Jugadas:Q', title='Cantidad de Jugadas'),
+                        color=alt.Color('Juego:N', scale=alt.Scale(scheme='darkmulti'), legend=None),
+                        tooltip=['Juego', 'Jugadas', alt.Tooltip('Porcentaje', format='.2f', title='Porcentaje (%)')]
+                    ).properties(
+                        height=250
+                    ).configure_axis(
+                        labelColor='#cccccc',
+                        titleColor='#ffffff',
+                        grid=False
+                    ).configure_view(
+                        strokeWidth=0
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                    
+                with col_legend:
+                    st.markdown("<div style='padding-top: 10px;'><b>Resumen de Actividad Global:</b></div>", unsafe_allow_html=True)
+                    for i, row_j in df_global.iterrows():
+                        st.write(f"🎮 **{row_j['Juego']}**: {row_j['Jugadas']:,} jugadas ({row_j['Porcentaje']:.1f}%)")
+            else:
+                st.info("Aún no hay datos suficientes de jugadas registradas para mostrar el gráfico global.")
+        else:
+            st.info("Aún no hay datos de validaciones registrados para mostrar el gráfico global.")
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         st.error(f"Error al cargar jugadores: {str(e)}")
 
 # --- NAVEGACIÓN PRINCIPAL ---

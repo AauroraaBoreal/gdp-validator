@@ -48,6 +48,7 @@ def crear_tablas():
                 total_registros INTEGER,
                 resultado VARCHAR,
                 reporte_whatsapp TEXT,
+                top_juegos_json TEXT,
                 fecha_procesamiento TIMESTAMP DEFAULT NOW()
             );
         """))
@@ -75,6 +76,11 @@ def crear_tablas():
                 accuracy_post DECIMAL
             );
         """))
+        # Migración: asegurar que la columna top_juegos_json exista si la tabla ya fue creada anteriormente
+        try:
+            conn.execute(text("ALTER TABLE validaciones ADD COLUMN IF NOT EXISTS top_juegos_json TEXT;"))
+        except Exception:
+            pass
         conn.commit()
     print("Tablas creadas correctamente en Supabase")
 
@@ -120,10 +126,24 @@ def guardar_validacion(df, resultado, reporte_whatsapp):
     fecha_inicio = df['EventTime'].min()
     fecha_fin = df['EventTime'].max()
     total_registros = len(df)
+
+    # Calcular Top 5 juegos de esta validación en formato JSON
+    try:
+        top_juegos = df['GameId'].value_counts().head(5)
+        df_top = pd.DataFrame({
+            'Juego': top_juegos.index,
+            'Jugadas': top_juegos.values,
+            'Porcentaje': (top_juegos.values / len(df) * 100).round(2)
+        })
+        top_juegos_json = df_top.to_json(orient='records')
+    except Exception as e:
+        print(f"Error al calcular top_juegos_json: {e}")
+        top_juegos_json = None
+
     with engine.connect() as conn:
         result = conn.execute(text("""
-            INSERT INTO validaciones (player_id, fecha_inicio, fecha_fin, total_registros, resultado, reporte_whatsapp)
-            VALUES (:player_id, :fecha_inicio, :fecha_fin, :total_registros, :resultado, :reporte_whatsapp)
+            INSERT INTO validaciones (player_id, fecha_inicio, fecha_fin, total_registros, resultado, reporte_whatsapp, top_juegos_json)
+            VALUES (:player_id, :fecha_inicio, :fecha_fin, :total_registros, :resultado, :reporte_whatsapp, :top_juegos_json)
             RETURNING validacion_id;
         """), {
             'player_id': player_id,
@@ -131,7 +151,8 @@ def guardar_validacion(df, resultado, reporte_whatsapp):
             'fecha_fin': fecha_fin,
             'total_registros': total_registros,
             'resultado': resultado,
-            'reporte_whatsapp': reporte_whatsapp
+            'reporte_whatsapp': reporte_whatsapp,
+            'top_juegos_json': top_juegos_json
         })
         validacion_id = result.fetchone()[0]
         conn.commit()
