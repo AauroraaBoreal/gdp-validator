@@ -14,6 +14,31 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def obtener_formato_moneda(df_or_row):
+    """
+    Retorna el símbolo y el nombre de la moneda a partir de la columna/campo 'Currency'.
+    Por defecto retorna ('$', 'MXN').
+    """
+    try:
+        from modules.modulo5_reportes import obtener_formato_moneda as _obtener
+        return _obtener(df_or_row)
+    except Exception:
+        # Fallback local para evitar problemas de caché de módulos en Streamlit Cloud
+        if isinstance(df_or_row, pd.DataFrame):
+            if 'Currency' in df_or_row.columns and len(df_or_row) > 0:
+                curr = str(df_or_row['Currency'].iloc[0]).strip().upper()
+            else:
+                curr = 'MXN'
+        elif isinstance(df_or_row, (dict, pd.Series)):
+            curr = str(df_or_row.get('Currency', 'MXN')).strip().upper()
+        else:
+            curr = 'MXN'
+
+        if curr == 'PEN':
+            return 'S/', 'PEN'
+        else:
+            return '$', 'MXN'
+
 # --- CONFIG ---
 st.set_page_config(
     page_title="GDP Validator",
@@ -240,6 +265,10 @@ def pagina_validar():
                         os.unlink(tmp_path)
                     except Exception:
                         pass
+                for key in ['df_procesado', 'retiros_encontrados', 'retiro_confirmado',
+                            'monto_validar', 'seleccion_retiro']:
+                    if key in st.session_state:
+                        del st.session_state[key]
                 print("--- ERROR LOGS ---")
                 traceback.print_exc()
                 st.warning(f"⚠️ Error al procesar el archivo: {str(e)}")
@@ -248,7 +277,6 @@ def pagina_validar():
         if 'retiros_encontrados' in st.session_state and st.session_state['retiros_encontrados']:
             retiros = st.session_state['retiros_encontrados']
             df = st.session_state['df_procesado']
-            from modules.modulo5_reportes import obtener_formato_moneda
             simbolo, moneda = obtener_formato_moneda(df)
 
             if len(retiros) > 1:
@@ -276,7 +304,6 @@ def pagina_validar():
                 st.session_state['retiro_confirmado'] = retiro_seleccionado
         elif 'df_procesado' in st.session_state and st.session_state.get('monto_validar', 0) > 0:
             df = st.session_state['df_procesado']
-            from modules.modulo5_reportes import obtener_formato_moneda
             simbolo, moneda = obtener_formato_moneda(df)
             st.error(f"❌ No se encontró ningún retiro cercano a **{simbolo}{st.session_state['monto_validar']:,.2f} {moneda}** en el archivo cargado.")
 
@@ -378,7 +405,6 @@ def pagina_validar():
 
                 if reporte_qa:
                     st.markdown("### 🔴 Registros sospechosos")
-                    from modules.modulo5_reportes import obtener_formato_moneda
                     simbolo_qa, moneda_qa = obtener_formato_moneda(df)
                     df_qa = anomalias.copy()
                     df_qa['Fila'] = df_qa.index + 1
