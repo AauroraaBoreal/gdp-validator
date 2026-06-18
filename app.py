@@ -165,8 +165,27 @@ def pagina_validar():
     if uploaded_file:
         st.info(f"Archivo cargado: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
 
+        # Intentar detectar la moneda del archivo cargado para mostrarla en el input
+        moneda_detectada = "MXN"
+        try:
+            import io, csv
+            content = uploaded_file.getvalue()
+            # Leer el header y la primera fila del CSV
+            f_in = io.StringIO(content.decode('utf-8', errors='replace'))
+            reader = csv.reader(f_in)
+            header = next(reader)
+            if 'Currency' in header:
+                idx_curr = header.index('Currency')
+                first_row = next(reader)
+                if len(first_row) > idx_curr:
+                    val = str(first_row[idx_curr]).strip().upper()
+                    if val in ['PEN', 'MXN']:
+                        moneda_detectada = val
+        except Exception:
+            pass
+
         monto_validar = st.number_input(
-            "Monto del retiro a validar (MXN)",
+            f"Monto del retiro a validar ({moneda_detectada})",
             min_value=0.0,
             value=0.0,
             step=0.01,
