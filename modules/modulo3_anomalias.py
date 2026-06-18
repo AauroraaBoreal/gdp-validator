@@ -167,6 +167,13 @@ def es_jackpot_sospechoso(row, patron_por_juego):
 
     return False, None
 
+def fmt_moneda(row, valor):
+    curr = str(row.get('Currency', 'MXN')).strip().upper()
+    if curr == 'PEN':
+        return f"S/{valor:,.2f} PEN"
+    else:
+        return f"${valor:,.2f} MXN"
+
 def generar_razon_anomalia(row, conteo_junto, conteo_chispeado, patron_por_juego):
     """Genera una explicación en lenguaje natural de por qué la jugada es anómala."""
     if pd.notna(row.get('TotalJPWin')) and row['TotalJPWin'] > 0:
@@ -191,24 +198,24 @@ def generar_razon_anomalia(row, conteo_junto, conteo_chispeado, patron_por_juego
 
     if row['ratio_ganancia'] >= 100:
         return (
-            f"La ganancia de ${row['TotalWin']:,.2f} MXN con una apuesta de "
-            f"${row['TotalBet']:,.2f} MXN representa un ratio de x{row['ratio_ganancia']:.1f}, "
+            f"La ganancia de {fmt_moneda(row, row['TotalWin'])} con una apuesta de "
+            f"{fmt_moneda(row, row['TotalBet'])} representa un ratio de x{row['ratio_ganancia']:.1f}, "
             f"extremadamente alejado del patrón habitual del jugador. "
             f"Este nivel de ganancia requiere verificación inmediata."
         )
 
     if row['ratio_ganancia'] >= 36:
         return (
-            f"La ganancia de ${row['TotalWin']:,.2f} MXN con una apuesta de "
-            f"${row['TotalBet']:,.2f} MXN genera un ratio de x{row['ratio_ganancia']:.1f}. "
+            f"La ganancia de {fmt_moneda(row, row['TotalWin'])} con una apuesta de "
+            f"{fmt_moneda(row, row['TotalBet'])} genera un ratio de x{row['ratio_ganancia']:.1f}. "
             f"El jugador registró {conteo_junto} ganancias altas juntas y "
             f"{conteo_chispeado} distribuidas en el periodo, superando el umbral definido."
         )
 
     if row['ratio_ganancia'] >= 26:
         return (
-            f"La ganancia de ${row['TotalWin']:,.2f} MXN con apuesta de "
-            f"${row['TotalBet']:,.2f} MXN genera un ratio de x{row['ratio_ganancia']:.1f}. "
+            f"La ganancia de {fmt_moneda(row, row['TotalWin'])} con apuesta de "
+            f"{fmt_moneda(row, row['TotalBet'])} genera un ratio de x{row['ratio_ganancia']:.1f}. "
             f"Se detectaron {conteo_junto + conteo_chispeado} ganancias con ratio ≥ x26 "
             f"en el periodo ({conteo_junto} juntas, {conteo_chispeado} distribuidas), "
             f"lo que indica un patrón de ganancias altas recurrente."
@@ -345,7 +352,8 @@ def obtener_observaciones_free_games(df):
         return None
     total_ganancia = free_games['TotalWin'].sum()
     conteo = len(free_games)
-    return f"Se observaron {conteo} jugada(s) de free games con ganancia acumulada de ${total_ganancia:,.2f} MXN sin apuesta asociada."
+    first_row = free_games.iloc[0]
+    return f"Se observaron {conteo} jugada(s) de free games con ganancia acumulada de {fmt_moneda(first_row, total_ganancia)} sin apuesta asociada."
 
 def actualizar_modelo_incremental(df_nuevo):
     df_nuevo = marcar_free_games(df_nuevo)

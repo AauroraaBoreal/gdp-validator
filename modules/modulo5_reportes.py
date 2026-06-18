@@ -2,6 +2,26 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
+def obtener_formato_moneda(df_or_row):
+    """
+    Retorna el símbolo y el nombre de la moneda a partir de la columna/campo 'Currency'.
+    Por defecto retorna ('$', 'MXN').
+    """
+    if isinstance(df_or_row, pd.DataFrame):
+        if 'Currency' in df_or_row.columns and len(df_or_row) > 0:
+            curr = str(df_or_row['Currency'].iloc[0]).strip().upper()
+        else:
+            curr = 'MXN'
+    elif isinstance(df_or_row, (dict, pd.Series)):
+        curr = str(df_or_row.get('Currency', 'MXN')).strip().upper()
+    else:
+        curr = 'MXN'
+
+    if curr == 'PEN':
+        return 'S/', 'PEN'
+    else:
+        return '$', 'MXN'
+
 def buscar_retiro(df, monto_retiro):
     """
     Busca el retiro más cercano al monto ingresado usando búsqueda
@@ -48,6 +68,7 @@ def buscar_retiro(df, monto_retiro):
 
 def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
     player_id = str(df['PlayerId'].iloc[0])
+    simbolo, moneda = obtener_formato_moneda(df)
 
     if idx_forzado is not None:
         idx_evento = idx_forzado
@@ -57,7 +78,7 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
     elif monto_validar is not None and float(monto_validar) > 0:
         idx_evento, monto_encontrado = buscar_retiro(df, monto_validar)
         if idx_evento is None:
-            raise ValueError(f"No se encontró ningún retiro cercano a ${float(monto_validar):,.2f} MXN en el archivo.")
+            raise ValueError(f"No se encontró ningún retiro cercano a {simbolo}{float(monto_validar):,.2f} {moneda} en el archivo.")
     else:
         balance = df['Balance'].values
         balance_change = df['BalanceChange'].values
@@ -118,7 +139,7 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
         .drop_duplicates(subset=['TotalBet'])
         .nlargest(3, 'TotalBet')['TotalBet']
     )
-    apuestas_str = ', '.join([f"${v:,.2f}" for v in top_apuestas]) if not top_apuestas.empty else "sin apuestas registradas"
+    apuestas_str = ', '.join([f"{simbolo}{v:,.2f}" for v in top_apuestas]) if not top_apuestas.empty else "sin apuestas registradas"
 
     # Top 3 juegos más jugados en el tramo
     juegos_str = ', '.join(tramo['GameId'].value_counts().head(3).index.tolist())
@@ -130,8 +151,8 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
         jp = jackpots_tramo.loc[jackpots_tramo['TotalJPWin'].idxmax()]
         comentario_extra = (
             f" El cliente obtuvo un jackpot de "
-            f"${jp['TotalJPWin']:,.2f} MXN con una apuesta de "
-            f"${jp['TotalBet']:,.2f} MXN en el juego {jp['GameId']}."
+            f"{simbolo}{jp['TotalJPWin']:,.2f} {moneda} con una apuesta de "
+            f"{simbolo}{jp['TotalBet']:,.2f} {moneda} en el juego {jp['GameId']}."
         )
     else:
         ganancias_altas = tramo[tramo['ratio_ganancia'] >= 26]
@@ -139,8 +160,8 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
             ga = ganancias_altas.loc[ganancias_altas['TotalWin'].idxmax()]
             comentario_extra = (
                 f" El cliente obtuvo una ganancia de "
-                f"${ga['TotalWin']:,.2f} MXN con una apuesta de "
-                f"${ga['TotalBet']:,.2f} MXN en el juego {ga['GameId']}."
+                f"{simbolo}{ga['TotalWin']:,.2f} {moneda} con una apuesta de "
+                f"{simbolo}{ga['TotalBet']:,.2f} {moneda} en el juego {ga['GameId']}."
             )
 
     # Observación free games
@@ -152,11 +173,11 @@ def generar_reporte_whatsapp(df, monto_validar=None, idx_forzado=None):
             observacion_fg = f" Observación: {obs}"
 
     reporte = (
-        f"El usuario {player_id} tenía un balance inicial de ${balance_inicial:,.2f} MXN "
-        f"(fila {fila_inicio}), con apuestas de {apuestas_str} MXN "
+        f"El usuario {player_id} tenía un balance inicial de {simbolo}{balance_inicial:,.2f} {moneda} "
+        f"(fila {fila_inicio}), con apuestas de {apuestas_str} {moneda} "
         f"en los juegos {juegos_str}, "
-        f"alcanzó un balance de ${balance_antes_retiro:,.2f} MXN antes del retiro. "
-        f"El cliente realizó un retiro de ${monto_encontrado:,.2f} MXN "
+        f"alcanzó un balance de {simbolo}{balance_antes_retiro:,.2f} {moneda} antes del retiro. "
+        f"El cliente realizó un retiro de {simbolo}{monto_encontrado:,.2f} {moneda} "
         f"(fila {fila_retiro}).{comentario_extra}{observacion_fg}"
     )
 
@@ -166,6 +187,7 @@ def generar_reporte_qa(df_anomalias):
     if df_anomalias.empty:
         return None
 
+    simbolo, moneda = obtener_formato_moneda(df_anomalias)
     lineas = []
     lineas.append("⚠️ REPORTE DE ALERTA - ÁREA DE QA")
     from datetime import timezone, timedelta
@@ -181,10 +203,10 @@ def generar_reporte_qa(df_anomalias):
         lineas.append(f"   GameInstanceID : {row.get('GameInstanceId', 'N/A')}")
         lineas.append(f"   Fecha y hora   : {row['EventTime']}")
         lineas.append(f"   Juego          : {row.get('GameId', 'N/A')}")
-        lineas.append(f"   Apuesta        : ${row['TotalBet']:,.2f} MXN")
-        lineas.append(f"   Ganancia       : ${row['TotalWin']:,.2f} MXN")
+        lineas.append(f"   Apuesta        : {simbolo}{row['TotalBet']:,.2f} {moneda}")
+        lineas.append(f"   Ganancia       : {simbolo}{row['TotalWin']:,.2f} {moneda}")
         if pd.notna(row.get('TotalJPWin')) and row['TotalJPWin'] > 0:
-            lineas.append(f"   Jackpot        : ${row['TotalJPWin']:,.2f} MXN")
+            lineas.append(f"   Jackpot        : {simbolo}{row['TotalJPWin']:,.2f} {moneda}")
         lineas.append(f"   Ratio          : x{round(row['ratio_ganancia'], 2)}")
         lineas.append(f"   Score anomalía : {round(row['anomalia_score'], 4)}")
         if pd.notna(row.get('razon_anomalia')):
