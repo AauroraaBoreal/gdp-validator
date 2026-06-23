@@ -2,6 +2,14 @@
 import streamlit as st
 import pandas as pd
 import os
+import sys
+import importlib
+
+# --- HOT RELOAD FOR MODULES ---
+for modulo in ['modules.modulo1_carga', 'modules.modulo3_anomalias', 'modules.modulo4_base_datos', 'modules.modulo5_reportes', 'modules.modulo6_evaluacion_no_supervisada']:
+    if modulo in sys.modules:
+        importlib.reload(sys.modules[modulo])
+
 # pyrefly: ignore [missing-import]
 from supabase import create_client
 # pyrefly: ignore [missing-import]
@@ -362,17 +370,40 @@ def pagina_validar():
                     traceback.print_exc()
                     st.warning(f"⚠️ Error de conexión a la base de datos: {str(db_err)}")
 
-                # Mostrar métricas
+                # Mostrar métricas con estilo premium
                 st.divider()
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("Total registros", f"{len(df):,}")
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size: 0.9rem; color: #888899; margin-bottom: 5px;">Total registros</div>
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #ffffff;">{len(df):,}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
                 with col2:
-                    st.metric("Jugador", str(df['PlayerId'].iloc[0]))
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size: 0.9rem; color: #888899; margin-bottom: 5px;">Jugador</div>
+                        <div style="font-size: 1.8rem; font-weight: bold; color: #ffffff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{df['PlayerId'].iloc[0]}">{df['PlayerId'].iloc[0]}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
                 with col3:
-                    st.metric("Anomalías detectadas", len(anomalias))
+                    color_anom = "#ff4444" if len(anomalias) > 0 else "#44ff44"
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size: 0.9rem; color: #888899; margin-bottom: 5px;">Anomalías detectadas</div>
+                        <div style="font-size: 1.8rem; font-weight: bold; color: {color_anom};">{len(anomalias)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
                 with col4:
-                    st.metric("Resultado", "⚠️ Sospechoso" if resultado == 'sospechoso' else "✅ Normal")
+                    color_res = "#ff4444" if resultado == 'sospechoso' else "#44ff44"
+                    label_res = "⚠️ Sospechoso" if resultado == 'sospechoso' else "✅ Normal"
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size: 0.9rem; color: #888899; margin-bottom: 5px;">Resultado</div>
+                        <div style="font-size: 1.8rem; font-weight: bold; color: {color_res};">{label_res}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 st.divider()
 
@@ -440,8 +471,21 @@ def pagina_validar():
                     df_qa['Razón'] = df_qa['razon_anomalia'].fillna("—")
                     df_qa['GameInstanceID'] = df_qa['GameInstanceId']
 
+                    # Filtro interactivo por tipo de anomalía
+                    tipos_disponibles = sorted(df_qa['Tipo'].dropna().unique().tolist())
+                    if tipos_disponibles:
+                        filtro_tipos = st.multiselect(
+                            "Filtrar por tipo de anomalía:",
+                            options=tipos_disponibles,
+                            default=tipos_disponibles,
+                            help="Selecciona los tipos de anomalías que deseas ver en la tabla."
+                        )
+                        df_qa_filtrado = df_qa[df_qa['Tipo'].isin(filtro_tipos)]
+                    else:
+                        df_qa_filtrado = df_qa
+
                     st.dataframe(
-                        df_qa[['Fila', 'GameInstanceID', 'Fecha y Hora', 'Juego',
+                        df_qa_filtrado[['Fila', 'GameInstanceID', 'Fecha y Hora', 'Juego',
                                 'Apuesta', 'Ganancia', 'Jackpot', 'Ratio', 'Tipo', 'Razón']],
                         use_container_width=True,
                         hide_index=True,
@@ -520,6 +564,7 @@ def pagina_historial():
                             st.markdown("#### 📊 Top 5 Juegos en esta Validación")
                             col_chart, col_legend = st.columns([2, 1])
                             with col_chart:
+                                # pyrefly: ignore [missing-import]
                                 import altair as alt
                                 chart = alt.Chart(df_top_juegos).mark_bar(
                                     cornerRadiusTopLeft=5,
@@ -653,6 +698,7 @@ def pagina_jugadores():
                 
                 col_chart, col_legend = st.columns([2, 1])
                 with col_chart:
+                    # pyrefly: ignore [missing-import]
                     import altair as alt
                     chart = alt.Chart(df_global).mark_bar(
                         cornerRadiusTopLeft=5,

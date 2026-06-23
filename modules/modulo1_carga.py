@@ -21,7 +21,11 @@ def cargar_csv(ruta_archivo):
     import csv
     data = []
     with open(ruta_archivo, 'r', encoding='utf-8', errors='replace') as f:
-        reader = csv.reader(f)
+        # Detectar delimitador (coma o punto y coma) según la primera línea
+        first_line = f.readline()
+        f.seek(0)
+        delimitador = ';' if ';' in first_line and first_line.count(';') > first_line.count(',') else ','
+        reader = csv.reader(f, delimiter=delimitador)
         try:
             header = next(reader)
         except StopIteration:
