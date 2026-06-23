@@ -126,7 +126,7 @@ def logout():
 def procesar_archivo(uploaded_file, monto_validar=None):
     import tempfile
     from modules.modulo1_carga import cargar_csv
-    from modules.modulo3_anomalias import detectar_anomalias
+    from modules.modulo3_random_forest import detectar_anomalias_random_forest
     from modules.modulo4_base_datos import crear_tablas, guardar_jugador, guardar_validacion, guardar_anomalias
     from modules.modulo5_reportes import generar_reporte_whatsapp, generar_reporte_qa
 
@@ -139,7 +139,7 @@ def procesar_archivo(uploaded_file, monto_validar=None):
             df = cargar_csv(tmp_path)
 
         with st.spinner("Detectando anomalías..."):
-            df, _ = detectar_anomalias(df)
+            df, _ = detectar_anomalias_random_forest(df)
 
         with st.spinner("Guardando en base de datos..."):
             crear_tablas()
@@ -205,7 +205,7 @@ def pagina_validar():
             import tempfile, os
             import traceback
             from modules.modulo1_carga import cargar_csv
-            from modules.modulo3_anomalias import detectar_anomalias
+            from modules.modulo3_random_forest import detectar_anomalias_random_forest
             from modules.modulo5_reportes import buscar_retiro
 
             tmp_path = None
@@ -217,7 +217,7 @@ def pagina_validar():
                 with st.spinner("Cargando archivo..."):
                     df = cargar_csv(tmp_path)
                 with st.spinner("Detectando anomalías..."):
-                    df, _ = detectar_anomalias(df)
+                    df, _ = detectar_anomalias_random_forest(df)
 
                 if tmp_path and os.path.exists(tmp_path):
                     os.unlink(tmp_path)
@@ -751,6 +751,7 @@ def main():
             ["📂 Nueva validación", "📜 Historial", "👤 Jugadores"],
             label_visibility="collapsed"
         )
+
 
 
         st.divider()

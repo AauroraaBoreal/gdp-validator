@@ -310,14 +310,6 @@ def detectar_anomalias(df):
     print(f"Patrón ganancias altas — Juntas (<1h): {conteo_junto} | Chispeadas (>1h): {conteo_chispeado}")
     print(f"Patrón jackpots — Juntos (<1h): {jp_juntos} | Chispeados (>1h): {jp_chispeados}")
 
-    # Filtrar anomalías detectadas por el modelo usando las reglas de negocio (evita falsos positivos en ratios bajos como x2, x3)
-    df['es_anomalia'] = df.apply(
-        lambda row: row['es_anomalia'] and evaluar_anomalia(
-            row, umbral_ratio, umbral_bet, conteo_junto, conteo_chispeado, patron_por_juego
-        ) if row['es_anomalia'] else False,
-        axis=1
-    )
-
     df['es_free_game_inusual'] = df.apply(
         lambda row: row['TotalBet'] == 0 and row['TotalWin'] > 50000 and not row.get('es_free_game', False),
         axis=1

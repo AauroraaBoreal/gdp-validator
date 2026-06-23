@@ -1,6 +1,8 @@
 from modules.modulo1_carga import cargar_csv
 from modules.modulo3_anomalias import entrenar_detector
-from modules.modulo6_evaluacion_no_supervisada import evaluar_detector_no_supervisado
+from modules.modulo3_autoencoder import entrenar_autoencoder
+from modules.modulo3_random_forest import entrenar_random_forest
+from modules.modulo6_evaluacion_no_supervisada import evaluar_detector_no_supervisado, comparar_modelos_no_supervisados
 
 import os
 import glob
@@ -17,9 +19,19 @@ def validar_sistema():
     print("ℹ️ Modelo clasificador omitido: el enfoque principal es no supervisado")
 
     if not os.path.exists('modelo_anomalias.pkl'):
-        errores.append("❌ modelo_anomalias.pkl no encontrado")
+        errores.append("❌ modelo_anomalias.pkl (Isolation Forest) no encontrado")
     else:
-        print("✅ Modelo de anomalías encontrado")
+        print("✅ Modelo Isolation Forest encontrado")
+
+    if not os.path.exists('modelo_autoencoder.pkl'):
+        errores.append("❌ modelo_autoencoder.pkl (Autoencoder) no encontrado")
+    else:
+        print("✅ Modelo Autoencoder encontrado")
+
+    if not os.path.exists('modelo_random_forest.pkl'):
+        errores.append("❌ modelo_random_forest.pkl (Random Forest) no encontrado")
+    else:
+        print("✅ Modelo Random Forest encontrado")
 
     try:
         from modules.modulo4_base_datos import get_engine
@@ -39,6 +51,8 @@ def validar_sistema():
     try:
         from modules.modulo1_carga import cargar_csv
         from modules.modulo3_anomalias import detectar_anomalias
+        from modules.modulo3_autoencoder import detectar_anomalias_autoencoder
+        from modules.modulo3_random_forest import detectar_anomalias_random_forest
         from modules.modulo5_reportes import mostrar_reportes
         print("✅ Todos los módulos importan correctamente")
     except Exception as e:
@@ -77,18 +91,26 @@ for archivo in archivos_entrenamiento:
 
 print(f"\nTotal de registros para entrenamiento: {len(df_total)}")
 
-print("\nEntrenando detector de anomalías no supervisado...")
-modelo_anomalias = entrenar_detector(df_total)
+print("\n1. Entrenando detector de anomalías Isolation Forest...")
+modelo_if = entrenar_detector(df_total)
 
-print("\nEntrenamiento completo.")
+print("\n2. Entrenando detector de anomalías Autoencoder...")
+modelo_ae = entrenar_autoencoder(df_total)
 
-# --- EVALUACIÓN NO SUPERVISADA ---
+print("\n3. Entrenando detector de anomalías Random Forest...")
+modelo_rf = entrenar_random_forest(df_total)
+
+print("\nEntrenamiento completo de los tres modelos.")
+
+# --- EVALUACIÓN Y COMPARACIÓN ---
 print("\nCargando CSV de evaluación independiente...")
 df_prueba = cargar_csv(CSV_EVALUACION)
 
-df_resultado = evaluar_detector_no_supervisado(
+df_res_if, df_res_ae, df_res_rf = comparar_modelos_no_supervisados(
     df_prueba,
-    modelo_anomalias,
+    modelo_if,
+    modelo_ae,
+    modelo_rf,
     salida_csv="resultados_evaluacion_no_supervisada.csv"
 )
 
