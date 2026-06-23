@@ -215,3 +215,4 @@ def evaluar_detector_no_supervisado(df, modelo, salida_csv="resultados_evaluacio
     print("=" * 70)
 
     return df_eval
+    
