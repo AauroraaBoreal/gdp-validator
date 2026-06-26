@@ -23,15 +23,30 @@ def validar_sistema():
     else:
         print("✅ Modelo Isolation Forest encontrado")
 
+    if not os.path.exists('modelo_anomalias_pca.pkl'):
+        errores.append("❌ modelo_anomalias_pca.pkl (Isolation Forest con PCA) no encontrado")
+    else:
+        print("✅ Modelo Isolation Forest con PCA encontrado")
+
     if not os.path.exists('modelo_autoencoder.pkl'):
         errores.append("❌ modelo_autoencoder.pkl (Autoencoder) no encontrado")
     else:
         print("✅ Modelo Autoencoder encontrado")
 
+    if not os.path.exists('modelo_autoencoder_pca.pkl'):
+        errores.append("❌ modelo_autoencoder_pca.pkl (Autoencoder con PCA) no encontrado")
+    else:
+        print("✅ Modelo Autoencoder con PCA encontrado")
+
     if not os.path.exists('modelo_random_forest.pkl'):
         errores.append("❌ modelo_random_forest.pkl (Random Forest) no encontrado")
     else:
         print("✅ Modelo Random Forest encontrado")
+
+    if not os.path.exists('modelo_random_forest_pca.pkl'):
+        errores.append("❌ modelo_random_forest_pca.pkl (Random Forest con PCA) no encontrado")
+    else:
+        print("✅ Modelo Random Forest con PCA encontrado")
 
     try:
         from modules.modulo4_base_datos import get_engine
@@ -91,27 +106,54 @@ for archivo in archivos_entrenamiento:
 
 print(f"\nTotal de registros para entrenamiento: {len(df_total)}")
 
-print("\n1. Entrenando detector de anomalías Isolation Forest...")
-modelo_if = entrenar_detector(df_total)
+print("\n=== ENTRENAMIENTO SIN PCA ===")
+print("1. Entrenando detector de anomalías Isolation Forest (Sin PCA)...")
+modelo_if = entrenar_detector(df_total, use_pca=False)
 
-print("\n2. Entrenando detector de anomalías Autoencoder...")
-modelo_ae = entrenar_autoencoder(df_total)
+print("\n2. Entrenando detector de anomalías Autoencoder (Sin PCA)...")
+modelo_ae = entrenar_autoencoder(df_total, use_pca=False)
 
-print("\n3. Entrenando detector de anomalías Random Forest...")
-modelo_rf = entrenar_random_forest(df_total)
+print("\n3. Entrenando detector de anomalías Random Forest (Sin PCA)...")
+modelo_rf = entrenar_random_forest(df_total, use_pca=False)
 
-print("\nEntrenamiento completo de los tres modelos.")
+print("\n=== ENTRENAMIENTO CON PCA ===")
+print("1. Entrenando detector de anomalías Isolation Forest (Con PCA)...")
+modelo_if_pca = entrenar_detector(df_total, use_pca=True)
+
+print("\n2. Entrenando detector de anomalías Autoencoder (Con PCA)...")
+modelo_ae_pca = entrenar_autoencoder(df_total, use_pca=True)
+
+print("\n3. Entrenando detector de anomalías Random Forest (Con PCA)...")
+modelo_rf_pca = entrenar_random_forest(df_total, use_pca=True)
+
+print("\nEntrenamiento completo de todos los modelos (con y sin PCA).")
 
 # --- EVALUACIÓN Y COMPARACIÓN ---
 print("\nCargando CSV de evaluación independiente...")
 df_prueba = cargar_csv(CSV_EVALUACION)
 
+print("\n============================================================")
+print("EVALUACIÓN DE MODELOS: ANTES DE PCA (SIN PCA)")
+print("============================================================")
 df_res_if, df_res_ae, df_res_rf = comparar_modelos_no_supervisados(
     df_prueba,
     modelo_if,
     modelo_ae,
     modelo_rf,
-    salida_csv="resultados_evaluacion_no_supervisada.csv"
+    salida_csv="resultados_evaluacion_no_supervisada.csv",
+    titulo="ANTES DE PCA"
+)
+
+print("\n============================================================")
+print("EVALUACIÓN DE MODELOS: DESPUÉS DE PCA (CON PCA)")
+print("============================================================")
+df_res_if_pca, df_res_ae_pca, df_res_rf_pca = comparar_modelos_no_supervisados(
+    df_prueba,
+    modelo_if_pca,
+    modelo_ae_pca,
+    modelo_rf_pca,
+    salida_csv="resultados_evaluacion_no_supervisada_pca.csv",
+    titulo="DESPUÉS DE PCA"
 )
 
 # --- VALIDACIÓN QA ---

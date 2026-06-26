@@ -123,10 +123,9 @@ def logout():
     st.rerun()
 
 # --- PROCESAR CSV ---
-def procesar_archivo(uploaded_file, monto_validar=None):
+def procesar_archivo(uploaded_file, monto_validar=None, modelo_seleccionado="Random Forest PCA"):
     import tempfile
     from modules.modulo1_carga import cargar_csv
-    from modules.modulo3_random_forest import detectar_anomalias_random_forest
     from modules.modulo4_base_datos import crear_tablas, guardar_jugador, guardar_validacion, guardar_anomalias
     from modules.modulo5_reportes import generar_reporte_whatsapp, generar_reporte_qa
 
@@ -138,8 +137,16 @@ def procesar_archivo(uploaded_file, monto_validar=None):
         with st.spinner("Cargando y preprocesando datos..."):
             df = cargar_csv(tmp_path)
 
-        with st.spinner("Detectando anomalías..."):
-            df, _ = detectar_anomalias_random_forest(df)
+        with st.spinner(f"Detectando anomalías con {modelo_seleccionado}..."):
+            if modelo_seleccionado == "Random Forest PCA":
+                from modules.modulo3_random_forest import detectar_anomalias_random_forest
+                df, _ = detectar_anomalias_random_forest(df, use_pca=True)
+            elif modelo_seleccionado == "Isolation Forest PCA":
+                from modules.modulo3_anomalias import detectar_anomalias
+                df, _ = detectar_anomalias(df, use_pca=True)
+            elif modelo_seleccionado == "Autoencoder PCA":
+                from modules.modulo3_autoencoder import detectar_anomalias_autoencoder
+                df, _ = detectar_anomalias_autoencoder(df, use_pca=True)
 
         with st.spinner("Guardando en base de datos..."):
             crear_tablas()
@@ -201,11 +208,17 @@ def pagina_validar():
             help="Ingresa el monto del retiro a validar."
         )
 
+        modelo_seleccionado = st.radio(
+            "🧠 Selecciona el modelo de IA (con PCA):",
+            ["Random Forest PCA", "Isolation Forest PCA", "Autoencoder PCA"],
+            horizontal=True,
+            help="Elige el modelo que detectará las anomalías. Todos utilizan PCA para reducir la dimensionalidad."
+        )
+
         if st.button("🔍 Buscar retiro", type="primary", use_container_width=True):
             import tempfile, os
             import traceback
             from modules.modulo1_carga import cargar_csv
-            from modules.modulo3_random_forest import detectar_anomalias_random_forest
             from modules.modulo5_reportes import buscar_retiro
 
             tmp_path = None
@@ -216,8 +229,16 @@ def pagina_validar():
 
                 with st.spinner("Cargando archivo..."):
                     df = cargar_csv(tmp_path)
-                with st.spinner("Detectando anomalías..."):
-                    df, _ = detectar_anomalias_random_forest(df)
+                with st.spinner(f"Detectando anomalías usando {modelo_seleccionado}..."):
+                    if modelo_seleccionado == "Random Forest PCA":
+                        from modules.modulo3_random_forest import detectar_anomalias_random_forest
+                        df, _ = detectar_anomalias_random_forest(df, use_pca=True)
+                    elif modelo_seleccionado == "Isolation Forest PCA":
+                        from modules.modulo3_anomalias import detectar_anomalias
+                        df, _ = detectar_anomalias(df, use_pca=True)
+                    elif modelo_seleccionado == "Autoencoder PCA":
+                        from modules.modulo3_autoencoder import detectar_anomalias_autoencoder
+                        df, _ = detectar_anomalias_autoencoder(df, use_pca=True)
 
                 if tmp_path and os.path.exists(tmp_path):
                     os.unlink(tmp_path)

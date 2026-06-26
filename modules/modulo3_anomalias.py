@@ -64,20 +64,52 @@ def marcar_free_games(df):
 
     return df
 
-def entrenar_detector(df):
-    print("Entrenando Isolation Forest...")
+def entrenar_detector(df, use_pca=False):
+    print(f"Entrenando Isolation Forest{' con PCA' if use_pca else ''}...")
     df = marcar_free_games(df)
     X = preparar_features_anomalias(df)
-    modelo = IsolationForest(
-        n_estimators=100,
-        contamination=0.02,
-        random_state=42
-    )
-    modelo.fit(X)
-    with open(MODELO_ANOMALIAS_PATH, 'wb') as f:
-        pickle.dump(modelo, f)
-    print(f"Modelo de anomalías guardado en {MODELO_ANOMALIAS_PATH}")
-    return modelo
+    if use_pca:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA
+        cols_cont = [c for c in FEATURES_ANOMALIAS if c != 'es_free_game']
+        X_cont = X[cols_cont]
+        X_bin = X[['es_free_game']].values
+        
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_cont)
+        pca = PCA(n_components=0.95, random_state=42)
+        X_pca_cont = pca.fit_transform(X_scaled)
+        X_pca = np.hstack((X_pca_cont, X_bin))
+        
+        modelo = IsolationForest(
+            n_estimators=100,
+            contamination=0.02,
+            random_state=42
+        )
+        modelo.fit(X_pca)
+        bundle = {
+            'model_type': 'isolation_forest',
+            'scaler': scaler,
+            'pca': pca,
+            'model': modelo,
+            'features': FEATURES_ANOMALIAS
+        }
+        path = MODELO_ANOMALIAS_PATH.replace('.pkl', '_pca.pkl')
+        with open(path, 'wb') as f:
+            pickle.dump(bundle, f)
+        print(f"Modelo de anomalías con PCA guardado en {path}")
+        return bundle
+    else:
+        modelo = IsolationForest(
+            n_estimators=100,
+            contamination=0.02,
+            random_state=42
+        )
+        modelo.fit(X)
+        with open(MODELO_ANOMALIAS_PATH, 'wb') as f:
+            pickle.dump(modelo, f)
+        print(f"Modelo de anomalías guardado en {MODELO_ANOMALIAS_PATH}")
+        return modelo
 
 def analizar_patron_ganancias_altas(df, umbral_ratio=26):
     ganancias_altas = df[df['ratio_ganancia'] >= umbral_ratio].copy()
@@ -261,20 +293,32 @@ def clasificar_tipo_anomalia(row):
         return 'ganancia_alta_repetitiva'
     return 'comportamiento_atipico'
 
-def detectar_anomalias(df):
+def detectar_anomalias(df, use_pca=False):
     df = marcar_free_games(df)
     X = preparar_features_anomalias(df)
 
-    if os.path.exists(MODELO_ANOMALIAS_PATH):
-        with open(MODELO_ANOMALIAS_PATH, 'rb') as f:
-            modelo = pickle.load(f)
-        print("Modelo de anomalías cargado desde archivo")
-    else:
-        modelo = entrenar_detector(df)
+    path = MODELO_ANOMALIAS_PATH.replace('.pkl', '_pca.pkl') if use_pca else MODELO_ANOMALIAS_PATH
 
-    # Asegurar compatibilidad de features con el modelo cargado
-    if hasattr(modelo, 'feature_names_in_'):
-        columnas_modelo = list(modelo.feature_names_in_)
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            modelo = pickle.load(f)
+        print(f"Modelo de anomalías{' con PCA' if use_pca else ''} cargado desde archivo")
+    else:
+        modelo = entrenar_detector(df, use_pca=use_pca)
+
+    if use_pca:
+        scaler = modelo['scaler']
+        pca = modelo['pca']
+        model_obj = modelo['model']
+        columnas_modelo = modelo['features']
+    else:
+        model_obj = modelo
+        if hasattr(modelo, 'feature_names_in_'):
+            columnas_modelo = list(modelo.feature_names_in_)
+        else:
+            columnas_modelo = None
+
+    if columnas_modelo:
         for col in columnas_modelo:
             if col not in X.columns:
                 if col == 'es_free_game':
@@ -286,16 +330,44 @@ def detectar_anomalias(df):
         X = X[columnas_modelo]
 
     try:
-        df['anomalia_score'] = modelo.decision_function(X)
-        df['es_anomalia'] = (modelo.predict(X) == -1) & (~df['es_free_game'])
+        if use_pca:
+            cols_cont = [c for c in columnas_modelo if c != 'es_free_game']
+            X_cont = X[cols_cont]
+            X_bin = X[['es_free_game']].values
+            
+            X_scaled = scaler.transform(X_cont)
+            X_pca_cont = pca.transform(X_scaled)
+            X_pca = np.hstack((X_pca_cont, X_bin))
+            
+            df['anomalia_score'] = model_obj.decision_function(X_pca)
+            df['es_anomalia'] = (model_obj.predict(X_pca) == -1) & (~df['es_free_game'])
+        else:
+            df['anomalia_score'] = model_obj.decision_function(X)
+            df['es_anomalia'] = (model_obj.predict(X) == -1) & (~df['es_free_game'])
     except Exception as e:
         print(f"Advertencia: Error al usar el modelo guardado ({e}). Re-entrenando detector...")
-        modelo = entrenar_detector(df)
+        modelo = entrenar_detector(df, use_pca=use_pca)
         X = preparar_features_anomalias(df)
-        if hasattr(modelo, 'feature_names_in_'):
-            X = X[list(modelo.feature_names_in_)]
-        df['anomalia_score'] = modelo.decision_function(X)
-        df['es_anomalia'] = (modelo.predict(X) == -1) & (~df['es_free_game'])
+        if use_pca:
+            scaler = modelo['scaler']
+            pca = modelo['pca']
+            model_obj = modelo['model']
+            
+            cols_cont = [c for c in columnas_modelo if c != 'es_free_game']
+            X_cont = X[cols_cont]
+            X_bin = X[['es_free_game']].values
+            
+            X_scaled = scaler.transform(X_cont)
+            X_pca_cont = pca.transform(X_scaled)
+            X_pca = np.hstack((X_pca_cont, X_bin))
+            
+            df['anomalia_score'] = model_obj.decision_function(X_pca)
+            df['es_anomalia'] = (model_obj.predict(X_pca) == -1) & (~df['es_free_game'])
+        else:
+            if hasattr(modelo, 'feature_names_in_'):
+                X = X[list(modelo.feature_names_in_)]
+            df['anomalia_score'] = modelo.decision_function(X)
+            df['es_anomalia'] = (modelo.predict(X) == -1) & (~df['es_free_game'])
 
     ratio_mean = df['ratio_ganancia'].mean()
     ratio_std = df['ratio_ganancia'].std()
@@ -334,7 +406,7 @@ def detectar_anomalias(df):
         print(f"Observaciones free games inusuales: {total_free_games} (no marcados como anomalía)")
 
     # Aprendizaje incremental: actualizamos el modelo con los nuevos datos
-    modelo = actualizar_modelo_incremental(df)
+    modelo = actualizar_modelo_incremental(df, use_pca=use_pca)
 
     return df, modelo
 
@@ -347,20 +419,52 @@ def obtener_observaciones_free_games(df):
     first_row = free_games.iloc[0]
     return f"Se observaron {conteo} jugada(s) de free games con ganancia acumulada de {fmt_moneda(first_row, total_ganancia)} sin apuesta asociada."
 
-def actualizar_modelo_incremental(df_nuevo):
+def actualizar_modelo_incremental(df_nuevo, use_pca=False):
     df_nuevo = marcar_free_games(df_nuevo)
     X_nuevo = preparar_features_anomalias(df_nuevo)
-    if os.path.exists(MODELO_ANOMALIAS_PATH):
-        print("Actualizando modelo con nuevos datos...")
-        modelo_nuevo = IsolationForest(
-            n_estimators=100,
-            contamination=0.02,
-            random_state=42
-        )
-        modelo_nuevo.fit(X_nuevo)
-        with open(MODELO_ANOMALIAS_PATH, 'wb') as f:
-            pickle.dump(modelo_nuevo, f)
-        print(f"Modelo actualizado con {len(df_nuevo)} registros nuevos.")
-        return modelo_nuevo
+    path = MODELO_ANOMALIAS_PATH.replace('.pkl', '_pca.pkl') if use_pca else MODELO_ANOMALIAS_PATH
+    if os.path.exists(path):
+        print(f"Actualizando modelo{' con PCA' if use_pca else ''} con nuevos datos...")
+        if use_pca:
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.decomposition import PCA
+            cols_cont = [c for c in FEATURES_ANOMALIAS if c != 'es_free_game']
+            X_cont = X_nuevo[cols_cont]
+            X_bin = X_nuevo[['es_free_game']].values
+            
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X_cont)
+            pca = PCA(n_components=0.95, random_state=42)
+            X_pca_cont = pca.fit_transform(X_scaled)
+            X_pca = np.hstack((X_pca_cont, X_bin))
+            
+            modelo_nuevo = IsolationForest(
+                n_estimators=100,
+                contamination=0.02,
+                random_state=42
+            )
+            modelo_nuevo.fit(X_pca)
+            bundle = {
+                'model_type': 'isolation_forest',
+                'scaler': scaler,
+                'pca': pca,
+                'model': modelo_nuevo,
+                'features': FEATURES_ANOMALIAS
+            }
+            with open(path, 'wb') as f:
+                pickle.dump(bundle, f)
+            print(f"Modelo actualizado con {len(df_nuevo)} registros nuevos.")
+            return bundle
+        else:
+            modelo_nuevo = IsolationForest(
+                n_estimators=100,
+                contamination=0.02,
+                random_state=42
+            )
+            modelo_nuevo.fit(X_nuevo)
+            with open(path, 'wb') as f:
+                pickle.dump(modelo_nuevo, f)
+            print(f"Modelo actualizado con {len(df_nuevo)} registros nuevos.")
+            return modelo_nuevo
     else:
-        return entrenar_detector(df_nuevo)
+        return entrenar_detector(df_nuevo, use_pca=use_pca)

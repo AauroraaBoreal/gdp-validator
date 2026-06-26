@@ -20,56 +20,98 @@ from modules.modulo3_anomalias import (
 
 MODELO_AUTOENCODER_PATH = 'modelo_autoencoder.pkl'
 
-def entrenar_autoencoder(df):
-    print("Entrenando Autoencoder (MLPRegressor)...")
+def entrenar_autoencoder(df, use_pca=False):
+    print(f"Entrenando Autoencoder (MLPRegressor){' con PCA' if use_pca else ''}...")
     df = marcar_free_games(df)
     X = preparar_features_anomalias(df)
     
+    cols_cont = [c for c in FEATURES_ANOMALIAS if c != 'es_free_game']
+    X_cont = X[cols_cont]
+    X_bin = X[['es_free_game']].values
+
     # Escalado de características es fundamental para redes neuronales / autoencoders
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_cont_scaled = scaler.fit_transform(X_cont)
+    X_scaled = np.hstack((X_cont_scaled, X_bin))
     
-    # Arquitectura de cuello de botella: input es de dim 6, hidden_layer_sizes = (4, 2, 4)
-    # Reconstruye el input (X_scaled)
-    modelo_ae = MLPRegressor(
-        hidden_layer_sizes=(4, 2, 4),
-        activation='relu',
-        solver='adam',
-        max_iter=500,
-        random_state=42
-    )
-    modelo_ae.fit(X_scaled, X_scaled)
-    
-    # Calcular errores de reconstrucción para encontrar el umbral
-    X_pred = modelo_ae.predict(X_scaled)
-    reconstruction_errors = np.mean((X_scaled - X_pred) ** 2, axis=1)
-    
-    # Umbral al percentil 98 (tasa de contaminación = 2%)
-    threshold = np.percentile(reconstruction_errors, 98)
-    print(f"Autoencoder entrenado. Umbral de reconstrucción (percentil 98): {threshold:.6f}")
-    
-    bundle = {
-        'scaler': scaler,
-        'model': modelo_ae,
-        'threshold': threshold,
-        'features': FEATURES_ANOMALIAS
-    }
-    
-    with open(MODELO_AUTOENCODER_PATH, 'wb') as f:
-        pickle.dump(bundle, f)
-    print(f"Modelo de autoencoder guardado en {MODELO_AUTOENCODER_PATH}")
-    return bundle
+    if use_pca:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=0.95, random_state=42)
+        X_pca_cont = pca.fit_transform(X_cont_scaled)
+        X_pca = np.hstack((X_pca_cont, X_bin))
+        
+        # input is typically 4 or 5 dims, hidden_layer_sizes bottleneck: (4, 2, 4)
+        modelo_ae = MLPRegressor(
+            hidden_layer_sizes=(4, 2, 4),
+            activation='relu',
+            solver='adam',
+            max_iter=500,
+            random_state=42
+        )
+        modelo_ae.fit(X_pca, X_pca)
+        
+        X_pred = modelo_ae.predict(X_pca)
+        reconstruction_errors = np.mean((X_pca - X_pred) ** 2, axis=1)
+        threshold = np.percentile(reconstruction_errors, 98)
+        print(f"Autoencoder con PCA entrenado. Umbral de reconstrucción (percentil 98): {threshold:.6f}")
+        
+        bundle = {
+            'model_type': 'autoencoder',
+            'scaler': scaler,
+            'pca': pca,
+            'model': modelo_ae,
+            'threshold': threshold,
+            'features': FEATURES_ANOMALIAS
+        }
+        path = MODELO_AUTOENCODER_PATH.replace('.pkl', '_pca.pkl')
+        with open(path, 'wb') as f:
+            pickle.dump(bundle, f)
+        print(f"Modelo de autoencoder con PCA guardado en {path}")
+        return bundle
+    else:
+        # Arquitectura de cuello de botella: input es de dim 6, hidden_layer_sizes = (4, 2, 4)
+        # Reconstruye el input (X_scaled)
+        modelo_ae = MLPRegressor(
+            hidden_layer_sizes=(4, 2, 4),
+            activation='relu',
+            solver='adam',
+            max_iter=500,
+            random_state=42
+        )
+        modelo_ae.fit(X_scaled, X_scaled)
+        
+        # Calcular errores de reconstrucción para encontrar el umbral
+        X_pred = modelo_ae.predict(X_scaled)
+        reconstruction_errors = np.mean((X_scaled - X_pred) ** 2, axis=1)
+        
+        # Umbral al percentil 98 (tasa de contaminación = 2%)
+        threshold = np.percentile(reconstruction_errors, 98)
+        print(f"Autoencoder entrenado. Umbral de reconstrucción (percentil 98): {threshold:.6f}")
+        
+        bundle = {
+            'scaler': scaler,
+            'model': modelo_ae,
+            'threshold': threshold,
+            'features': FEATURES_ANOMALIAS
+        }
+        
+        with open(MODELO_AUTOENCODER_PATH, 'wb') as f:
+            pickle.dump(bundle, f)
+        print(f"Modelo de autoencoder guardado en {MODELO_AUTOENCODER_PATH}")
+        return bundle
 
-def detectar_anomalias_autoencoder(df):
+def detectar_anomalias_autoencoder(df, use_pca=False):
     df = marcar_free_games(df)
     X = preparar_features_anomalias(df)
 
-    if os.path.exists(MODELO_AUTOENCODER_PATH):
-        with open(MODELO_AUTOENCODER_PATH, 'rb') as f:
+    path = MODELO_AUTOENCODER_PATH.replace('.pkl', '_pca.pkl') if use_pca else MODELO_AUTOENCODER_PATH
+
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
             bundle = pickle.load(f)
-        print("Modelo de autoencoder cargado desde archivo")
+        print(f"Modelo de autoencoder{' con PCA' if use_pca else ''} cargado desde archivo")
     else:
-        bundle = entrenar_autoencoder(df)
+        bundle = entrenar_autoencoder(df, use_pca=use_pca)
 
     scaler = bundle['scaler']
     modelo_ae = bundle['model']
@@ -88,9 +130,22 @@ def detectar_anomalias_autoencoder(df):
     X = X[columnas_modelo]
 
     try:
-        X_scaled = scaler.transform(X)
-        X_pred = modelo_ae.predict(X_scaled)
-        reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
+        cols_cont = [c for c in columnas_modelo if c != 'es_free_game']
+        X_cont = X[cols_cont]
+        X_bin = X[['es_free_game']].values
+        
+        X_cont_scaled = scaler.transform(X_cont)
+        X_scaled = np.hstack((X_cont_scaled, X_bin))
+        
+        if use_pca:
+            pca = bundle['pca']
+            X_pca_cont = pca.transform(X_cont_scaled)
+            X_pca = np.hstack((X_pca_cont, X_bin))
+            X_pred = modelo_ae.predict(X_pca)
+            reconstruction_error = np.mean((X_pca - X_pred) ** 2, axis=1)
+        else:
+            X_pred = modelo_ae.predict(X_scaled)
+            reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
         
         # score = threshold - error. Así, si score < 0, es anomalía.
         # Además, al ordenar ascendente los scores, los más negativos (mayor error) salen primero.
@@ -98,13 +153,25 @@ def detectar_anomalias_autoencoder(df):
         df['es_anomalia'] = (reconstruction_error > threshold) & (~df['es_free_game'])
     except Exception as e:
         print(f"Advertencia: Error al usar el modelo autoencoder guardado ({e}). Re-entrenando...")
-        bundle = entrenar_autoencoder(df)
+        bundle = entrenar_autoencoder(df, use_pca=use_pca)
         scaler = bundle['scaler']
         modelo_ae = bundle['model']
         threshold = bundle['threshold']
-        X_scaled = scaler.transform(X)
-        X_pred = modelo_ae.predict(X_scaled)
-        reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
+        cols_cont = [c for c in columnas_modelo if c != 'es_free_game']
+        X_cont = X[cols_cont]
+        X_bin = X[['es_free_game']].values
+        X_cont_scaled = scaler.transform(X_cont)
+        X_scaled = np.hstack((X_cont_scaled, X_bin))
+        
+        if use_pca:
+            pca = bundle['pca']
+            X_pca_cont = pca.transform(X_cont_scaled)
+            X_pca = np.hstack((X_pca_cont, X_bin))
+            X_pred = modelo_ae.predict(X_pca)
+            reconstruction_error = np.mean((X_pca - X_pred) ** 2, axis=1)
+        else:
+            X_pred = modelo_ae.predict(X_scaled)
+            reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
         df['anomalia_score'] = threshold - reconstruction_error
         df['es_anomalia'] = (reconstruction_error > threshold) & (~df['es_free_game'])
 

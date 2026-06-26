@@ -47,15 +47,22 @@ def nivel_riesgo_por_score(score, q10, q25):
 
 
 def evaluar_detector_no_supervisado(df, modelo, salida_csv="resultados_evaluacion_no_supervisada.csv"):
-    is_ae = isinstance(modelo, dict) and 'model' in modelo
-    is_rf = not is_ae and hasattr(modelo, 'predict_proba')
+    is_pca = isinstance(modelo, dict) and 'pca' in modelo
+    
+    if is_pca:
+        model_type = modelo.get('model_type')
+        is_ae = (model_type == 'autoencoder')
+        is_rf = (model_type == 'random_forest')
+    else:
+        is_ae = isinstance(modelo, dict) and 'model' in modelo
+        is_rf = not is_ae and hasattr(modelo, 'predict_proba')
 
     if is_ae:
-        model_name = "AUTOENCODER"
+        model_name = "AUTOENCODER (PCA)" if is_pca else "AUTOENCODER"
     elif is_rf:
-        model_name = "RANDOM FOREST"
+        model_name = "RANDOM FOREST (PCA)" if is_pca else "RANDOM FOREST"
     else:
-        model_name = "ISOLATION FOREST"
+        model_name = "ISOLATION FOREST (PCA)" if is_pca else "ISOLATION FOREST"
 
     print("\n" + "=" * 70)
     print(f"EVALUACIÓN NO SUPERVISADA - {model_name}")
@@ -68,7 +75,9 @@ def evaluar_detector_no_supervisado(df, modelo, salida_csv="resultados_evaluacio
     X = preparar_features_anomalias(df_eval)
 
     # Asegurar compatibilidad de features con el modelo cargado
-    if is_ae:
+    if is_pca:
+        columnas_modelo = modelo.get('features', [])
+    elif is_ae:
         columnas_modelo = modelo.get('features', [])
     elif hasattr(modelo, 'feature_names_in_'):
         columnas_modelo = list(modelo.feature_names_in_)
@@ -87,54 +96,132 @@ def evaluar_detector_no_supervisado(df, modelo, salida_csv="resultados_evaluacio
         X = X[columnas_modelo]
 
     try:
-        if is_ae:
+        if is_pca:
             scaler = modelo['scaler']
-            modelo_ae = modelo['model']
-            threshold = modelo['threshold']
-            X_scaled = scaler.transform(X)
-            X_pred = modelo_ae.predict(X_scaled)
-            reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
-            df_eval["anomalia_score"] = threshold - reconstruction_error
-            df_eval["es_anomalia_modelo"] = (reconstruction_error > threshold) & (~df_eval["es_free_game"])
-        elif is_rf:
-            prob_anomaly = modelo.predict_proba(X)[:, 1]
-            df_eval["anomalia_score"] = 0.5 - prob_anomaly
-            df_eval["es_anomalia_modelo"] = (prob_anomaly > 0.5) & (~df_eval["es_free_game"])
+            pca = modelo['pca']
+            model_obj = modelo['model']
+            
+            cols_cont = [c for c in columnas_modelo if c != 'es_free_game']
+            X_cont = X[cols_cont]
+            X_bin = X[['es_free_game']].values
+            
+            X_cont_scaled = scaler.transform(X_cont)
+            X_pca_cont = pca.transform(X_cont_scaled)
+            X_pca = np.hstack((X_pca_cont, X_bin))
+            
+            if is_ae:
+                threshold = modelo['threshold']
+                X_pred = model_obj.predict(X_pca)
+                reconstruction_error = np.mean((X_pca - X_pred) ** 2, axis=1)
+                df_eval["anomalia_score"] = threshold - reconstruction_error
+                df_eval["es_anomalia_modelo"] = (reconstruction_error > threshold) & (~df_eval["es_free_game"])
+            elif is_rf:
+                prob_anomaly = model_obj.predict_proba(X_pca)[:, 1]
+                df_eval["anomalia_score"] = 0.5 - prob_anomaly
+                df_eval["es_anomalia_modelo"] = (prob_anomaly > 0.5) & (~df_eval["es_free_game"])
+            else:
+                df_eval["anomalia_score"] = model_obj.decision_function(X_pca)
+                df_eval["prediccion_modelo"] = model_obj.predict(X_pca)
+                df_eval["es_anomalia_modelo"] = (df_eval["prediccion_modelo"] == -1) & (~df_eval["es_free_game"])
         else:
-            df_eval["anomalia_score"] = modelo.decision_function(X)
-            df_eval["prediccion_modelo"] = modelo.predict(X)
-            df_eval["es_anomalia_modelo"] = (df_eval["prediccion_modelo"] == -1) & (~df_eval["es_free_game"])
+            if is_ae:
+                scaler = modelo['scaler']
+                modelo_ae = modelo['model']
+                threshold = modelo['threshold']
+                
+                cols_cont = [c for c in columnas_modelo if c != 'es_free_game']
+                X_cont = X[cols_cont]
+                X_bin = X[['es_free_game']].values
+                
+                X_cont_scaled = scaler.transform(X_cont)
+                X_scaled = np.hstack((X_cont_scaled, X_bin))
+                
+                X_pred = modelo_ae.predict(X_scaled)
+                reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
+                df_eval["anomalia_score"] = threshold - reconstruction_error
+                df_eval["es_anomalia_modelo"] = (reconstruction_error > threshold) & (~df_eval["es_free_game"])
+            elif is_rf:
+                prob_anomaly = modelo.predict_proba(X)[:, 1]
+                df_eval["anomalia_score"] = 0.5 - prob_anomaly
+                df_eval["es_anomalia_modelo"] = (prob_anomaly > 0.5) & (~df_eval["es_free_game"])
+            else:
+                df_eval["anomalia_score"] = modelo.decision_function(X)
+                df_eval["prediccion_modelo"] = modelo.predict(X)
+                df_eval["es_anomalia_modelo"] = (df_eval["prediccion_modelo"] == -1) & (~df_eval["es_free_game"])
     except Exception as e:
         print(f"Advertencia: Error al usar el modelo en evaluación ({e}). Re-entrenando detector...")
         if is_ae:
             from modules.modulo3_autoencoder import entrenar_autoencoder
-            modelo = entrenar_autoencoder(df_eval)
+            modelo = entrenar_autoencoder(df_eval, use_pca=is_pca)
             scaler = modelo['scaler']
             modelo_ae = modelo['model']
             threshold = modelo['threshold']
             X = preparar_features_anomalias(df_eval)
             X = X[modelo.get('features', [])]
-            X_scaled = scaler.transform(X)
-            X_pred = modelo_ae.predict(X_scaled)
-            reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
+            
+            cols_cont = [c for c in modelo.get('features', []) if c != 'es_free_game']
+            X_cont = X[cols_cont]
+            X_bin = X[['es_free_game']].values
+            X_cont_scaled = scaler.transform(X_cont)
+            
+            if is_pca:
+                pca = modelo['pca']
+                X_pca_cont = pca.transform(X_cont_scaled)
+                X_pca = np.hstack((X_pca_cont, X_bin))
+                X_pred = modelo_ae.predict(X_pca)
+                reconstruction_error = np.mean((X_pca - X_pred) ** 2, axis=1)
+            else:
+                X_scaled = np.hstack((X_cont_scaled, X_bin))
+                X_pred = modelo_ae.predict(X_scaled)
+                reconstruction_error = np.mean((X_scaled - X_pred) ** 2, axis=1)
             df_eval["anomalia_score"] = threshold - reconstruction_error
             df_eval["es_anomalia_modelo"] = (reconstruction_error > threshold) & (~df_eval["es_free_game"])
         elif is_rf:
             from modules.modulo3_random_forest import entrenar_random_forest
-            modelo = entrenar_random_forest(df_eval)
-            if hasattr(modelo, 'feature_names_in_'):
-                X = X[list(modelo.feature_names_in_)]
-            prob_anomaly = modelo.predict_proba(X)[:, 1]
+            modelo = entrenar_random_forest(df_eval, use_pca=is_pca)
+            if is_pca:
+                scaler = modelo['scaler']
+                pca = modelo['pca']
+                model_rf = modelo['model']
+                
+                cols_cont = [c for c in modelo.get('features', []) if c != 'es_free_game']
+                X_cont = X[cols_cont]
+                X_bin = X[['es_free_game']].values
+                
+                X_cont_scaled = scaler.transform(X_cont)
+                X_pca_cont = pca.transform(X_cont_scaled)
+                X_pca = np.hstack((X_pca_cont, X_bin))
+                prob_anomaly = model_rf.predict_proba(X_pca)[:, 1]
+            else:
+                if hasattr(modelo, 'feature_names_in_'):
+                    X = X[list(modelo.feature_names_in_)]
+                prob_anomaly = modelo.predict_proba(X)[:, 1]
             df_eval["anomalia_score"] = 0.5 - prob_anomaly
             df_eval["es_anomalia_modelo"] = (prob_anomaly > 0.5) & (~df_eval["es_free_game"])
         else:
             from modules.modulo3_anomalias import entrenar_detector
-            modelo = entrenar_detector(df_eval)
+            modelo = entrenar_detector(df_eval, use_pca=is_pca)
             X = preparar_features_anomalias(df_eval)
-            if hasattr(modelo, 'feature_names_in_'):
-                X = X[list(modelo.feature_names_in_)]
-            df_eval["anomalia_score"] = modelo.decision_function(X)
-            df_eval["prediccion_modelo"] = modelo.predict(X)
+            if is_pca:
+                scaler = modelo['scaler']
+                pca = modelo['pca']
+                model_obj = modelo['model']
+                
+                cols_cont = [c for c in modelo.get('features', []) if c != 'es_free_game']
+                X_cont = X[cols_cont]
+                X_bin = X[['es_free_game']].values
+                
+                X_cont_scaled = scaler.transform(X_cont)
+                X_pca_cont = pca.transform(X_cont_scaled)
+                X_pca = np.hstack((X_pca_cont, X_bin))
+                
+                df_eval["anomalia_score"] = model_obj.decision_function(X_pca)
+                df_eval["prediccion_modelo"] = model_obj.predict(X_pca)
+            else:
+                if hasattr(modelo, 'feature_names_in_'):
+                    X = X[list(modelo.feature_names_in_)]
+                df_eval["anomalia_score"] = modelo.decision_function(X)
+                df_eval["prediccion_modelo"] = modelo.predict(X)
             df_eval["es_anomalia_modelo"] = (df_eval["prediccion_modelo"] == -1) & (~df_eval["es_free_game"])
 
     # Calcular umbrales y patrones para evaluar_anomalia
@@ -256,7 +343,7 @@ def evaluar_detector_no_supervisado(df, modelo, salida_csv="resultados_evaluacio
     return df_eval
 
 
-def comparar_modelos_no_supervisados(df, modelo_if, modelo_ae, modelo_rf, salida_csv="resultados_evaluacion_no_supervisada.csv"):
+def comparar_modelos_no_supervisados(df, modelo_if, modelo_ae, modelo_rf, salida_csv="resultados_evaluacion_no_supervisada.csv", titulo=None):
     from sklearn.metrics import precision_recall_fscore_support
 
     # Evaluar los tres modelos sin guardar CSV individualmente
@@ -286,8 +373,15 @@ def comparar_modelos_no_supervisados(df, modelo_if, modelo_ae, modelo_rf, salida
     anom_rf = int(y_rf.sum())
     anom_reglas = int(y_regla.sum())
 
+    is_pca = (isinstance(modelo_if, dict) and 'pca' in modelo_if) or \
+             (isinstance(modelo_ae, dict) and 'pca' in modelo_ae) or \
+             (isinstance(modelo_rf, dict) and 'pca' in modelo_rf)
+
+    if titulo is None:
+        titulo = "DESPUÉS DE PCA" if is_pca else "ANTES DE PCA"
+
     print("\n" + "=" * 90)
-    print("RESUMEN COMPARATIVO DE RENDIMIENTO (CONTRA REGLAS DE NEGOCIO)")
+    print(f"RESUMEN COMPARATIVO DE RENDIMIENTO (CONTRA REGLAS DE NEGOCIO) - {titulo}")
     print("=" * 90)
     print(f"{'Métrica':<28} | {'Isolation Forest':<18} | {'Autoencoder':<15} | {'Random Forest':<15}")
     print("-" * 90)
